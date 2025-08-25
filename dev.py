@@ -1,4 +1,4 @@
-# dev.py — OPx Brand UI (dark/light) • botões amarelos
+# dev.py — OPx Brand UI (dark/light) • botões amarelos • exporta Excel
 import os, json
 import pandas as pd
 from datetime import datetime, timedelta
@@ -14,6 +14,7 @@ except Exception:
     PIL_AVAILABLE = False
 
 from jsonExport import dataMondaytoJson
+
 
 
 # ==============================
@@ -241,7 +242,12 @@ class SimpleTable(ctk.CTk):
 
         self.btn_sort_desc = ctk.CTkButton(actions, text="Prioridade ↓",
                                            command=self.sort_by_priority_desc, width=140)
-        self.btn_sort_desc.pack(side="left")
+        self.btn_sort_desc.pack(side="left", padx=(0, 8))
+
+        # ---- NOVO: botão para gerar/atualizar planilha Excel ----
+        self.btn_export = ctk.CTkButton(actions, text="Atualizar planilha",
+                                        command=self.export_excel, width=170)
+        self.btn_export.pack(side="left")
 
         # Treeview
         tree_wrap = ctk.CTkFrame(container)
@@ -292,7 +298,6 @@ class SimpleTable(ctk.CTk):
             "logo.png",
             os.path.join(os.getcwd(), "opx_logo.png"),
             os.path.join(os.getcwd(), "logo.png"),
-            # imagem enviada nesta conversa (ajuste se quiser fixar caminho)
             "/mnt/data/5082b2bb-77a4-4dca-a578-62b0dfd196c5.png",
         ]
         if not PIL_AVAILABLE:
@@ -300,7 +305,6 @@ class SimpleTable(ctk.CTk):
         for p in logo_path_candidates:
             if os.path.exists(p):
                 img = Image.open(p)
-                # reduz e mantém transparência
                 longest = 140
                 ratio = longest / max(img.size)
                 img = img.resize((int(img.size[0]*ratio), int(img.size[1]*ratio)))
@@ -313,7 +317,6 @@ class SimpleTable(ctk.CTk):
     def _current_mode(self) -> str:
         mode = self.appearance.get()
         if mode == "system":
-            # pega do CTk
             return ctk.get_appearance_mode().lower()
         return mode
 
@@ -383,24 +386,24 @@ class SimpleTable(ctk.CTk):
         self.btn_reload.configure(**yellow_kwargs)
         self.btn_sort_asc.configure(**yellow_kwargs)
         self.btn_sort_desc.configure(**yellow_kwargs)
+        if hasattr(self, "btn_export"):
+            self.btn_export.configure(**yellow_kwargs)
 
-        # --- AQUI O AJUSTE ---
         # OptionMenu (Máx/semana) também amarelo
         self.opt_max.configure(fg_color=OPX_YELLOW,
-                            button_color=OPX_YELLOW,
-                            button_hover_color=OPX_YELLOW_HOVER,
-                            text_color=OPX_TEXT_DARK)
+                               button_color=OPX_YELLOW,
+                               button_hover_color=OPX_YELLOW_HOVER,
+                               text_color=OPX_TEXT_DARK)
 
-        # SegmentedButton (dark/light/system) em cinza discreto
+        # SegmentedButton (dark/light/system) neutro (sem azul)
         self.appearance_btn.configure(
             fg_color=pal["bg2"],
             selected_color=pal["fg"],
             selected_hover_color=pal["fg"],
             unselected_color=pal["border"],
             unselected_hover_color=pal["muted"],
-            text_color=pal["bg"],  # texto claro/escuro conforme fundo
+            text_color=pal["bg"],
         )
-        # ---------------------
 
         # status bar
         self.status.configure(text_color=pal["fg"])
@@ -409,7 +412,6 @@ class SimpleTable(ctk.CTk):
         if hasattr(self, "header"):
             self.header.configure(fg_color=pal["bg2"])
         self.configure(fg_color=pal["bg"])
-
 
     # ---------- Data Ops ----------
     def populate(self, tree, df):
@@ -470,6 +472,51 @@ class SimpleTable(ctk.CTk):
             self.status.configure(text=f"Erro ao carregar dados: {e}")
             self.df_final = pd.DataFrame(columns=["__iid"] + self.colunas_exibidas)
             self.populate(self.reported_tree, self.df_final)
+
+        # ---------- Exportação Excel ----------
+    def export_excel(self, path: str = None):
+        """
+        Exporta/atualiza a planilha Excel com os dados atuais da tabela.
+        Sempre salva no mesmo diretório como ListaAtualizada.xlsx
+        """
+        try:
+            if self.df_final.empty:
+                self.status.configure(text="Nada para exportar: tabela vazia.")
+                return
+
+            # caminho fixo: mesmo diretório do dev.py
+            if path is None:
+                path = os.path.join(os.getcwd(), "ListaAtualizada.xlsx")
+
+            # DataFrame sem a coluna técnica
+            df = self.df_final.copy()
+            if "__iid" in df.columns:
+                df = df.drop(columns="__iid")
+
+            # escreve
+            with pd.ExcelWriter(path, engine="openpyxl") as writer:
+                sheet_name = "Reparos"
+                df.to_excel(writer, index=False, sheet_name=sheet_name)
+
+                # pós-processo: larguras e freeze
+                ws = writer.book[sheet_name]
+                ws.freeze_panes = "A2"
+
+                for col_idx, col_name in enumerate(df.columns, start=1):
+                    sample = max([len(str(col_name))] + [len(str(v)) for v in df[col_name].astype(str).head(200)])
+                    width = min(max(sample + 4, 12), 50)
+                    ws.column_dimensions[ws.cell(row=1, column=col_idx).column_letter].width = width
+
+                # aba Meta com timestamp
+                meta = pd.DataFrame({
+                    "Campo": ["Gerado em", "Total de itens"],
+                    "Valor": [datetime.now().strftime("%d/%m/%Y %H:%M:%S"), len(df)]
+                })
+                meta.to_excel(writer, index=False, sheet_name="Meta")
+
+            self.status.configure(text=f"Planilha atualizada: {path}")
+        except Exception as e:
+            self.status.configure(text=f"Falha ao exportar Excel: {e}")
 
     # ---------- UX helpers ----------
     def recalc_targets(self):
@@ -595,12 +642,9 @@ class SimpleTable(ctk.CTk):
 
     # ---------- Aparência ----------
     def change_appearance(self, mode):
-        # Atualiza modo do CTk
         ctk.set_appearance_mode(mode)
-        # Atualiza estilos ttk e cores de componentes
         self._setup_tree_style()
         self._apply_brand_colors()
-        # força repintura das linhas (zebra com cores do modo)
         self.populate(self.reported_tree, self.df_final)
 
 
