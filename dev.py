@@ -1,18 +1,26 @@
-# dev.py — OPx Brand UI (dark/light) • botões amarelos • exporta Excel
-import os, json
-import pandas as pd
-from datetime import datetime, timedelta
+# --------------------- Imports principais ---------------------
 
-import customtkinter as ctk
-from tkinter import ttk
+import os, json                           # Utilidades de sistema e manipulação de arquivos JSON
+import pandas as pd                       # Estruturas de dados (DataFrame) e exportação para Excel
+from datetime import datetime, timedelta  # Manipulação de datas (ex.: cálculo de semanas)
 
-# (opcional) mostrar logo no header, se existir
+# Bibliotecas para a interface gráfica
+
+import customtkinter as ctk               # Interface moderna (dark/light, botões customizados)
+from tkinter import ttk                   # Treeview e outros widgets clássicos do Tkinter
+
+# --------------------- Suporte opcional a logo ---------------------
+# Tenta importar o Pillow (PIL) para exibir uma logo no cabeçalho da UI.
+# Se a lib não estiver instalada, apenas desativa o recurso sem quebrar o app.
 try:
     from PIL import Image
-    PIL_AVAILABLE = True
+    PIL_AVAILABLE = True                 # Flag que controla se podemos mostrar a logo
 except Exception:
-    PIL_AVAILABLE = False
+    PIL_AVAILABLE = False                # Caso Pillow não esteja disponível
 
+# --------------------- Integração com dados do Monday ---------------------
+# Função responsável por exportar dados do Monday em JSON,
+# usada depois para carregar e exibir as informações na tabela.
 from jsonExport import dataMondaytoJson
 
 
@@ -63,44 +71,65 @@ ctk.set_default_color_theme("blue")   # base do CTk (vamos sobrescrever cores ch
 # Dados (Monday)
 # ==============================
 def get_monday_data():
-    """Lê o monday_export_all.json e normaliza as colunas usadas."""
+
+    """Lê o arquivo JSON exportado do Monday ("monday_export_all.json") e
+    retorna os dados em um DataFrame pandas normalizado e filtrado."""
+
+    # --------------------- Leitura do arquivo JSON ---------------------
+
     with open("monday_export_all.json", "r", encoding="utf-8") as f:
         data = json.load(f)
+
+    # Extrai a lista de itens, se não existir retorna lista vazia
 
     items = data.get("items", [])
     records = []
 
+    # --------------------- Normalização dos itens ---------------------
+
     for item in items:
-        record = {"Name": item.get("name", "")}
+        record = {"Name": item.get("name", "")}       # Nome principal do item
+
+        # Copia todos os pares (id, text) das colunas do Monday
         for col in item.get("column_values", []):
             record[col.get("id")] = col.get("text")
-        # garante SN explicitamente
+
+        # Garante que a coluna "SN" (id "text") exista explicitamente
+
         record["text"] = next(
             (col.get("text") for col in item.get("column_values", []) if col.get("id") == "text"),
             None
         )
+
+        # Adiciona o registro tratado à lista
+
         records.append(record)
 
+    # Converte lista de dicionários em DataFrame
     df = pd.DataFrame(records)
 
-    # garante colunas críticas
+    # --------------------- Garantia de colunas críticas ---------------------
+    # Cria colunas vazias se não existirem, evitando KeyError
     for col in ("status", "status_1", "subelementos", "proposta_n_", "cliente"):
         if col not in df.columns:
             df[col] = "" if col in ("subelementos", "proposta_n_", "cliente") else None
 
-    # due_date como datetime
+    # --------------------- Conversão de datas ---------------------
     if "due_date" in df.columns:
+        # Converte "due_date" em datetime, valores inválidos viram NaT
         df["due_date"] = pd.to_datetime(df["due_date"], errors="coerce")
     else:
-        df["due_date"] = pd.NaT
+        df["due_date"] = pd.NaT # Coluna inexistente → inicializa vazia
 
-    # Filtra status desejados
+    # --------------------- Filtros de negócio ---------------------
+    # Mantém apenas status relevantes
     status_desejados = {"Reportado", "Pausado", "Em andamento"}
     df = df[df["status"].isin(status_desejados)].copy()
 
-    # remove casos antigos
+    # Remove entradas antigas ou inválidas (status_1 == "--" ou vazio)
     df = df[~df["status_1"].isin(["--", "", None])].copy()
 
+    # Retorna DataFrame pronto para uso no app
     return df
 
 
@@ -108,37 +137,70 @@ def get_monday_data():
 # Lógica de Targets
 # ==============================
 def monday_of_week(d: datetime) -> datetime:
-    """Retorna a segunda da semana que contém 'd'. Se for sábado/domingo, a próxima segunda."""
-    if d.weekday() < 5:
-        return d - timedelta(days=d.weekday())
-    return d + timedelta(days=(7 - d.weekday()))
+    """Retorna a segunda-feira da semana que contém a data `d`.
+    - Se `d` for de segunda a sexta (weekday 0–4), retorna a segunda dessa semana.
+    - Se `d` for sábado (5) ou domingo (6), retorna a próxima segunda."""
+    
+    if d.weekday() < 5:                           # Dias úteis (segunda=0 até sexta=4)
+        return d - timedelta(days=d.weekday())    # Volta até a segunda da mesma semana
+    return d + timedelta(days=(7 - d.weekday()))  # Avança até a próxima segunda
 
 def generate_targets(n, start_date_str="28/08/2025", max_per_week=5):
     """
-    Gera rótulos: 'Semana XX - dd/mm/aaaa'
-    - Começa em 36; ao passar de 52, volta a 1.
-    - Target sempre na segunda da semana seguinte.
+    Gera rótulos semanais no formato: 'Semana XX - dd/mm/aaaa'
+
+    - Numeração começa em 36 (exigência do negócio).
+    - Quando passa de 52, reinicia em 1.
+    - Cada bloco de até `max_per_week` itens recebe a mesma semana/segunda.
+    - O target sempre cai na segunda-feira da semana seguinte.
     """
+
+    # Converte string da data inicial para objeto datetime
     start = datetime.strptime(start_date_str, "%d/%m/%Y")
     week_monday = monday_of_week(start)
 
+    # Obtém a segunda-feira da semana de início
     targets = []
-    for i in range(n):
-        block = i // max_per_week
-        target_date = week_monday + timedelta(days=7 * (block + 1))
-        semana_rotulo = (block + 36 - 1) % 52 + 1
-        targets.append(f"Semana {semana_rotulo} - {target_date.strftime('%d/%m/%Y')}")
-    return targets
+    for i in range(n): 
+        block = i // max_per_week                                         # Agrupa em blocos do tamanho max_per_week
+        target_date = week_monday + timedelta(days=7 * (block + 1))       # Segunda da semana seguinte
+        semana_rotulo = (block + 36 - 1) % 52 + 1                         # Semana inicia em 36, reinicia em 1 após 52
+        targets.append(f"Semana {semana_rotulo} - {target_date.strftime('%d/%m/%Y')}")  
+    return targets                                                        # Lista de strings com os rótulos de cada target
 
 def add_targets_to_reparos(df, start_date_str="28/08/2025", max_per_week=5):
+
+    """
+    Adiciona a coluna 'target' ao DataFrame de reparos,
+    definindo a semana/dia de entrega para cada item conforme prioridade.
+
+    - Se o DataFrame estiver vazio → retorna com 'target' vazio.
+    - Ordena os reparos pela prioridade (status_1) e pela due_date.
+    - Gera rótulos semanais usando `generate_targets`.
+    """
+
+    # --------------------- Caso DataFrame vazio ---------------------
+
     if df.empty:
         df["target"] = None
         return df
+    # --------------------- Mapeamento de prioridade ---------------------
+    # Define ordem de severidade: menor valor = mais urgente
     prioridade = {"SEVERA": 0, "ALTA": 1, "MÉDIA": 2, "LEVE": 3}
-    df = df.copy()
+    df = df.copy()                                                               # Evita modificar o DataFrame original
+    # Cria coluna auxiliar numérica com prioridade
+    # Se não encontrado no dict → vira 999 (menos prioridade)
     df["__priority__"] = df["status_1"].map(prioridade).fillna(999).astype(int)
+
+    # --------------------- Ordenação ---------------------
+    # Primeiro por prioridade, depois por data de vencimento
     df = df.sort_values(by=["__priority__", "due_date"], ascending=[True, True]).reset_index(drop=True)
+
+    # --------------------- Geração de targets ---------------------
+    # Cria a coluna 'target' com os rótulos semanais
     df["target"] = generate_targets(len(df), start_date_str=start_date_str, max_per_week=max_per_week)
+
+    # Remove coluna auxiliar de prioridade antes de retornar
     return df.drop(columns=["__priority__"])
 
 
@@ -147,47 +209,75 @@ def add_targets_to_reparos(df, start_date_str="28/08/2025", max_per_week=5):
 # ==============================
 class SimpleTable(ctk.CTk):
     def __init__(self):
-        super().__init__()
-        self.title("Fila de Reparos · OPx")
-        self.geometry("1280x820")
-        self.minsize(1024, 600)
+        """
+            Construtor da janela principal da aplicação "Fila de Reparos · OPx".
 
-        # Estado
-        self.start_date_str = ctk.StringVar(value="28/08/2025")
-        self.max_per_week = ctk.StringVar(value="5")
-        self.appearance = ctk.StringVar(value="dark")
+            - Define título, dimensões e estado inicial.
+            - Configura variáveis de controle (data inicial, max_per_week, tema).
+            - Define ordem das colunas exibidas na tabela.
+            - Prepara DataFrame vazio que receberá os dados.
+            - Instancia conector do Monday (dataMondaytoJson).
+            - Constrói a interface (UI) e aplica as cores de marca.
+            - Carrega os dados iniciais.
+        """
+        super().__init__()                     # Inicializa a classe base (janela Tk)
 
-        # Ordem pedida:
+        # --------------------- Configuração da janela ---------------------
+
+        self.title("Fila de Reparos · OPx")    # Título da janela
+        self.geometry("1280x820")              # Tamanho inicial
+        self.minsize(1024, 600)                # Tamanho mínimo permitido
+
+        # --------------------- Estado inicial ---------------------
+
+        self.start_date_str = ctk.StringVar(value="28/08/2025") # Data inicial de cálculo
+        self.max_per_week = ctk.StringVar(value="5")            # Máx. de reparos por semana
+        self.appearance = ctk.StringVar(value="dark")           # Tema inicial (dark)
+
+        #--------------------- Definição de colunas ---------------------
+        # Ordem personalizada das colunas exibidas na tabela
         self.colunas_exibidas = [
             "Status",
             "Elemento",
             "N° Proposta",
-            "Cliente",   # entre proposta e SN
+            "Cliente",
             "SN",
             "Prioridade",
             "Data de Submissão",
             "Targetts",
         ]
+        # DataFrame que armazenará os dados carregados do Monday
         self.df_final = pd.DataFrame()
 
-        # Monday (atualizador)
+        #--------------------- Atualizador de dados ---------------------
+        # Instancia objeto que traz dados do Monday (via jsonExport)
         self.mondayDataUpdate = dataMondaytoJson()
 
-        # Layout
-        self._build_ui()
-        self._apply_brand_colors()   # cores iniciais
-        self.load_data()
+        # --------------------- Construção da interface ---------------------
+        self._build_ui()             # Monta os widgets principais
+        self._apply_brand_colors()   # Aplica cores padrão OPx (botões amarelos, etc.)
+        self.load_data()             # Carrega dados iniciais para a tabela
 
     # ---------- UI ----------
     def _build_ui(self):
-        # Header
+        """
+        Constrói toda a interface gráfica (UI) da aplicação.
+        - Monta header com logo, título, subtítulo e controles.
+        - Cria botões de ação (recarregar, ordenar, exportar Excel).
+        - Configura a tabela (Treeview) com rolagem, estilo, zebra e drag&drop.
+        - Adiciona status bar inferior.
+        """
+
+        # --------------------- Header ---------------------
+
         self.header = ctk.CTkFrame(self, corner_radius=16)
         self.header.pack(fill="x", padx=14, pady=12)
 
-        # Logo (opcional)
+        # Logo opcional (só aparece se Pillow estiver disponível)
         self.logo_label = None
         self._try_set_logo(self.header)
 
+        # Título e subtítulo
         self.title_label = ctk.CTkLabel(self.header, text="Fila de Reparos",
                                         font=ctk.CTkFont(size=24, weight="bold"))
         self.subtitle_label = ctk.CTkLabel(
@@ -198,10 +288,11 @@ class SimpleTable(ctk.CTk):
         self.title_label.grid(row=0, column=1, sticky="w", padx=12, pady=(10, 0))
         self.subtitle_label.grid(row=1, column=1, sticky="w", padx=12, pady=(0, 12))
 
-        # Controles
+        # --------------------- Controles ---------------------
         self.controls = ctk.CTkFrame(self.header, fg_color="transparent")
         self.controls.grid(row=0, column=2, rowspan=2, sticky="e", padx=12, pady=12)
 
+        # Campo de data inicial
         ctk.CTkLabel(self.controls, text="Data inicial").grid(row=0, column=0, padx=(0, 8))
         self.entry_date = ctk.CTkEntry(self.controls, width=120, textvariable=self.start_date_str,
                                        placeholder_text="DD/MM/AAAA")
@@ -224,11 +315,13 @@ class SimpleTable(ctk.CTk):
         )
         self.appearance_btn.grid(row=0, column=6)
 
-        # Container
+        # --------------------- Container principal ---------------------
+
         container = ctk.CTkFrame(self, corner_radius=16)
         container.pack(fill="both", expand=True, padx=14, pady=(0, 12))
 
-        # Ações
+        # --------------------- Barra de ações ---------------------
+
         actions = ctk.CTkFrame(container, fg_color="transparent")
         actions.pack(fill="x", padx=12, pady=(12, 6))
 
@@ -244,22 +337,27 @@ class SimpleTable(ctk.CTk):
                                            command=self.sort_by_priority_desc, width=140)
         self.btn_sort_desc.pack(side="left", padx=(0, 8))
 
-        # ---- NOVO: botão para gerar/atualizar planilha Excel ----
+        # Botão de exportação para Excel
         self.btn_export = ctk.CTkButton(actions, text="Atualizar planilha",
                                         command=self.export_excel, width=170)
         self.btn_export.pack(side="left")
 
-        # Treeview
+        # --------------------- Tabela (Treeview) ---------------------
+
         tree_wrap = ctk.CTkFrame(container)
         tree_wrap.pack(fill="both", expand=True, padx=12, pady=(8, 12))
 
+        # Scrollbars
+        
         self.scroll_y = ttk.Scrollbar(tree_wrap, orient="vertical")
         self.scroll_y.pack(side="right", fill="y")
 
         self.scroll_x = ttk.Scrollbar(tree_wrap, orient="horizontal")
         self.scroll_x.pack(side="bottom", fill="x")
 
-        self._setup_tree_style()  # cria estilo ttk baseado no modo atual
+        self._setup_tree_style()   # Estilo visual do Treeview
+
+        # Criação da tabela
 
         self.reported_tree = ttk.Treeview(
             tree_wrap,
@@ -274,44 +372,61 @@ class SimpleTable(ctk.CTk):
         self.scroll_y.config(command=self.reported_tree.yview)
         self.scroll_x.config(command=self.reported_tree.xview)
 
+        # Configuração de colunas (título, largura, ordenação clicável)
+
         for col in self.colunas_exibidas:
             self.reported_tree.heading(col, text=col, command=lambda c=col: self.sort_by_column(c))
             self.reported_tree.column(col, minwidth=90, width=160, anchor="center")
 
-        # zebra
+        # Zebra rows (linhas alternadas)
         self.reported_tree.tag_configure("oddrow", background=THEME["dark"]["row_odd"])
         self.reported_tree.tag_configure("evenrow", background=THEME["dark"]["row_even"])
 
-        # DnD
+        # Eventos de drag & drop na tabela
         self.reported_tree.bind("<ButtonPress-1>", self._on_tree_press)
         self.reported_tree.bind("<B1-Motion>", self._on_tree_motion)
         self.reported_tree.bind("<ButtonRelease-1>", self._on_tree_release)
 
-        # Status bar
+        # --------------------- Status bar ---------------------
         self.status = ctk.CTkLabel(self, text="Pronto", anchor="w")
         self.status.pack(fill="x", padx=14, pady=(0, 10))
 
     def _try_set_logo(self, parent):
-        """Se existir a logo no mesmo diretório, exibe no header."""
+        """
+            Tenta exibir a logo no header (parent frame).
+            - Procura por arquivos de logo em vários caminhos candidatos.
+            - Se encontrar e Pillow estiver disponível, redimensiona e exibe.
+            - Caso contrário, não faz nada.
+        """
+
+        # Candidatos de caminho para a logo (ordem de tentativa)
         logo_path_candidates = [
-            "opx_logo.png",
-            "logo.png",
-            os.path.join(os.getcwd(), "opx_logo.png"),
-            os.path.join(os.getcwd(), "logo.png"),
-            "/mnt/data/5082b2bb-77a4-4dca-a578-62b0dfd196c5.png",
+            "opx_logo.png",                            # nome padrão no diretório atual
+            "logo.png",                                # alternativa genérica
+            os.path.join(os.getcwd(), "opx_logo.png"), # caminho absoluto do diretório atual
+            os.path.join(os.getcwd(), "logo.png"),     # idem acima
+            "/mnt/data/5082b2bb-77a4-4dca-a578-62b0dfd196c5.png", # caminho fixo (provável teste)
         ]
+
+        # Se Pillow não estiver disponível, sai sem fazer nada
+
         if not PIL_AVAILABLE:
             return
+        # Percorre cada caminho e tenta abrir a primeira logo encontrada
         for p in logo_path_candidates:
             if os.path.exists(p):
-                img = Image.open(p)
-                longest = 140
+                img = Image.open(p) # abre imagem encontrada
+                longest = 140       # Redimensiona mantendo proporção
                 ratio = longest / max(img.size)
                 img = img.resize((int(img.size[0]*ratio), int(img.size[1]*ratio)))
+
+                # Cria imagem compatível com CustomTkinter (suporte a dark/light)
+
                 cimg = ctk.CTkImage(light_image=img, dark_image=img, size=img.size)
+                # Cria label da logo e posiciona no header
                 self.logo_label = ctk.CTkLabel(parent, image=cimg, text="")
                 self.logo_label.grid(row=0, column=0, rowspan=2, padx=(12, 6), pady=6)
-                break
+                break # para na primeira logo válida encontrada
 
     # ---------- Estilos ----------
     def _current_mode(self) -> str:
