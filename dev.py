@@ -779,7 +779,7 @@ class SimpleTable(ctk.CTk):
             q = int((self.week_override_qty.get() or "").strip())
         except Exception:
             return
-        if not (1 <= w <= 53) or q <= 0:
+        if not (0 <= w <= 53) or q < 0:
             return
 
         # atualiza regra da semana
