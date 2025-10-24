@@ -678,33 +678,76 @@ class SimpleTable(ctk.CTk):
         for c in self.colunas_exibidas: self.reported_tree.column(c, width=int(widths.get(c,140)))
 
     def _enable_row_dnd(self):
-        self._dnd_active=False; self._dnd_src_iid=None
+        # Estado do DnD
+        self._dnd_active = False      # True somente se houve arrasto real
+        self._dnd_src_iid = None
+        self._dnd_start_xy = None     # (x_root, y_root) do clique inicial
+        self._dnd_threshold = 6       # pixels de movimento para considerar "drag"
+
         self.reported_tree.bind("<ButtonPress-1>", self._on_drag_start)
         self.reported_tree.bind("<B1-Motion>", self._on_drag_motion)
         self.reported_tree.bind("<ButtonRelease-1>", self._on_drag_release)
 
-    def _on_drag_start(self,e):
-        iid=self.reported_tree.identify_row(e.y)
-        if not iid: self._dnd_active=False; self._dnd_src_iid=None; return
-        self._dnd_active=True; self._dnd_src_iid=iid
-    def _on_drag_motion(self,e):
-        if not self._dnd_active or not self._dnd_src_iid: return
-        y=e.y; h=self.reported_tree.winfo_height()
-        if y<20: self.reported_tree.yview_scroll(-1,"units")
-        elif y>h-20: self.reported_tree.yview_scroll(1,"units")
-        tgt=self.reported_tree.identify_row(y)
-        if not tgt or tgt==self._dnd_src_iid: return
-        parent=""; ch=list(self.reported_tree.get_children(parent))
+    def _on_drag_start(self, e):
+        # Captura a linha sob o cursor; se não houver, não inicia
+        iid = self.reported_tree.identify_row(e.y)
+        if not iid:
+            self._dnd_active = False
+            self._dnd_src_iid = None
+            self._dnd_start_xy = None
+            return
+        # Apenas marca o ponto inicial; NÃO ativa o DnD ainda
+        self._dnd_src_iid = iid
+        self._dnd_start_xy = (e.x_root, e.y_root)
+        self._dnd_active = False
+
+    def _on_drag_motion(self, e):
+        # Só entra se temos um possível drag em andamento
+        if not self._dnd_start_xy or not self._dnd_src_iid:
+            return
+
+        # Ativa o DnD apenas se o movimento superar o threshold
+        dx = abs(e.x_root - self._dnd_start_xy[0])
+        dy = abs(e.y_root - self._dnd_start_xy[1])
+        if not self._dnd_active and (dx > self._dnd_threshold or dy > self._dnd_threshold):
+            self._dnd_active = True
+
+        if not self._dnd_active:
+            return  # movimento pequeno = clique simples; não arrasta
+
+        # --- a partir daqui, DnD realmente ativo ---
+        y = e.y
+        h = self.reported_tree.winfo_height()
+        if y < 20:
+            self.reported_tree.yview_scroll(-1, "units")
+        elif y > h - 20:
+            self.reported_tree.yview_scroll(1, "units")
+
+        tgt = self.reported_tree.identify_row(y)
+        if not tgt or tgt == self._dnd_src_iid:
+            return
+        parent = ""
+        ch = list(self.reported_tree.get_children(parent))
         try:
-            idx=ch.index(tgt); self.reported_tree.move(self._dnd_src_iid,parent,idx)
-        except: pass
-    def _on_drag_release(self,e):
-        if not self._dnd_active or not self._dnd_src_iid: return
-        self._dnd_active=False
+            idx = ch.index(tgt)
+            self.reported_tree.move(self._dnd_src_iid, parent, idx)
+        except Exception:
+            pass
+
+    def _on_drag_release(self, e):
+        # Limpa estado ao soltar
         try:
-            self._rebuild_df_from_tree_order(); self.recalc_targets(keep_existing_week_caps=True, user_initiated=True)
-            self.render_main_table(); self._mark_dirty(True)
-        finally: self._dnd_src_iid=None
+            # Só reconstrói/recacula se houve ARRSTO real
+            if self._dnd_active and self._dnd_src_iid:
+                self._rebuild_df_from_tree_order()
+                self.recalc_targets(keep_existing_week_caps=True, user_initiated=True)
+                self.render_main_table()
+                self._mark_dirty(True)
+        finally:
+            self._dnd_active = False
+            self._dnd_src_iid = None
+            self._dnd_start_xy = None
+
 
     def _rebuild_df_from_tree_order(self):
         if self.df_final is None or self.df_final.empty: return
