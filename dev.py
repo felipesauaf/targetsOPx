@@ -32,8 +32,8 @@ THEMES = {
         "bg": "#F1F5F9", "bg2": "#F8FAFC", "fg": "#0F172A", "muted": "#475569",
         "row_even": "#FFFFFF", "row_odd": "#F3F4F6",
         "sel_bg": "#D1E9FF", "sel_fg": "#0F172A",
-        "header_bg": "#FFFFFF",     # cabeçalho branco no modo claro
-        "header_fg": "#0F172A",     # texto escuro
+        "header_bg": "#FFFFFF",
+        "header_fg": "#0F172A",
         "border": "#CBD5E1", "chip_bg": "#EEF2FF",
         "ok": "#166534", "warn": "#b45309", "err": "#b91c1c",
         "entry_bg": "#FFFFFF", "entry_fg": "#0F172A",
@@ -52,7 +52,7 @@ def canonicalize_priority(v):
     s=str(v)
     s=unicodedata.normalize("NFD", s).encode("ascii","ignore").decode().upper()
     s=s.replace("Ó","O").replace("Õ","O")
-    s=re.sub(r"<[^>]*>","",s)  # remove html badge
+    s=re.sub(r"<[^>]*>","",s)
     s=re.sub(r"\s+"," ",s).strip()
     for k in PRIO_ORDER:
         if k in s: return k
@@ -61,7 +61,6 @@ def canonicalize_priority(v):
 def with_priority_badge(v):
     s=canonicalize_priority(v)
     if not s: return ""
-    color = {"SEVERA":"#ef4444","ALTA":"#f59e0b","MEDIA":"#3b82f6","BAIXA":"#16a34a"}.get(s,"#6b7280")
     return f"[{s}]"
 
 def ensure_badges(df):
@@ -88,7 +87,6 @@ class ThemedMessage(ctk.CTkToplevel):
         bf=ctk.CTkFrame(self,fg_color="transparent"); bf.pack(pady=(8,14)); self.choice=None; self._btns=[]
         for i,txt in enumerate(buttons):
             b=ctk.CTkButton(bf,text=txt,width=100,command=lambda t=txt:self._set_choice(t))
-            # todos botões amarelos
             b.configure(fg_color=OPX_YELLOW,hover_color="#ffcc33",text_color="#0F172A")
             self._btns.append(b); b.grid(row=0,column=i,padx=6)
         self.bind("<Return>", lambda e:self._set_choice(buttons[default_index] if 0<=default_index<len(buttons) else buttons[0]))
@@ -99,8 +97,8 @@ class ThemedMessage(ctk.CTkToplevel):
 
 def show_info(p,t,m):  d=ThemedMessage(p,t,m,"info",("OK",)); p.wait_window(d)
 def show_error(p,t,m): d=ThemedMessage(p,t,m,"error",("OK",)); p.wait_window(d)
-def ask_yes_no_cancel(p,t,m):
-    d=ThemedMessage(p,t,m,"warn",("Sim","Não","Cancelar"),0); p.wait_window(d); return d.choice
+def ask_yes_no(p,t,m):
+    d=ThemedMessage(p,t,m,"warn",("Sim","Não"),0); p.wait_window(d); return d.choice
 
 def get_monday_data_from_json():
     with open("monday_export_all.json","r",encoding="utf-8") as f: data=json.load(f)
@@ -251,7 +249,6 @@ class LoadingDialog(ctk.CTkToplevel):
             self.msg.configure(text=text)
         self.update_idletasks()
 
-    # NOVO: método para adicionar linhas no log, com timestamp
     def add_log(self, text: str):
         if not self.logbox:
             return
@@ -292,12 +289,11 @@ class SimpleTable(ctk.CTk):
         self.df_novos=pd.DataFrame(); self.df_removed=pd.DataFrame()
 
         self._img_logo=self._img_sun=self._img_moon=None
-        # --- Estado de painel Removidos / badge ---
         self._removed_count = 0
         self._removed_collapsed = False
         self.btn_removed_badge = None
 
-        # --- Log de regras aplicadas por semana (para confirmações futuras) ---
+        # Log de regras aplicadas por semana (para confirmar só quando mudar valor da MESMA semana)
         self._week_rule_log = {}
 
         self._setup_theme(); self._build_ui(); self.load_data_initial()
@@ -364,7 +360,8 @@ class SimpleTable(ctk.CTk):
             except Exception: self._img_moon=None
 
     def _restyle_action_buttons(self):
-        for w in (getattr(self,"btn_reload",None), getattr(self,"btn_transfer",None),
+        for w in (getattr(self,"btn_reload",None), getattr(self,"btn_save",None),
+                  getattr(self,"btn_transfer",None),
                   getattr(self,"btn_sort_asc",None), getattr(self,"btn_sort_desc",None),
                   getattr(self,"btn_apply_week",None), getattr(self,"btn_clear_weeks",None),
                   getattr(self,"btn_removed_badge",None)):
@@ -398,7 +395,6 @@ class SimpleTable(ctk.CTk):
     def _on_theme_change(self):
         self._setup_theme(); self._setup_tree_style(); self._update_theme_icon()
         self._restyle_inputs(); self._restyle_action_buttons()
-        # Faixas sempre pretas no topo
         if hasattr(self,"header") and self.header is not None: self.header.configure(fg_color=HEADER_BG)
         if hasattr(self,"week_frame") and self.week_frame is not None: self.week_frame.configure(fg_color=HEADER_BG)
 
@@ -451,11 +447,11 @@ class SimpleTable(ctk.CTk):
                                      fg_color="transparent",hover=True,corner_radius=20)
         self.btn_theme.grid(row=0,column=2,padx=8,pady=(2,2),sticky="e"); self._update_theme_icon()
 
-        # ===== BARRA DE CONTROLES (também preta) =====
+        # ===== BARRA DE CONTROLES (preta) =====
         self.week_frame=ctk.CTkFrame(self.header, fg_color=HEADER_BG)
         self.week_frame.grid(row=1,column=0,columnspan=3,sticky="we",padx=12,pady=(4,10))
         for i in range(12): self.week_frame.grid_columnconfigure(i,weight=0)
-        self.week_frame.grid_columnconfigure(11,weight=1)
+        self.week_frame.grid_columnconfigure(12,weight=1)
 
         ctk.CTkLabel(self.week_frame,text="Semana",text_color="#FFFFFF").grid(row=0,column=0,padx=(0,8))
         self.entry_week_num=ctk.CTkEntry(self.week_frame,width=72,height=36,textvariable=self.week_override_week,
@@ -492,16 +488,22 @@ class SimpleTable(ctk.CTk):
         actions=ctk.CTkFrame(container, fg_color=theme["bg2"]); actions.pack(fill="x", padx=12, pady=(8,6))
         left=ctk.CTkFrame(actions, fg_color=theme["bg2"]); left.pack(side="left")
 
-        self.btn_reload=ctk.CTkButton(left,text="Atualizar dados",command=self.on_click_atualizar_async,width=300)
+        self.btn_reload=ctk.CTkButton(left,text="Atualizar dados",command=self.on_click_atualizar_async,width=220)
         self._style_yellow_button(self.btn_reload); self.btn_reload.pack(side="left", padx=(0,8))
+
+        self.btn_save=ctk.CTkButton(left,text="Salvar",command=self.export_excel,width=120)
+        self._style_yellow_button(self.btn_save); self.btn_save.pack(side="left", padx=(0,8))
+
         self.btn_transfer=ctk.CTkButton(left,text="Transferir novos → Lista",command=self._transfer_all_novos,width=220)
         self._style_yellow_button(self.btn_transfer); self.btn_transfer.pack(side="left", padx=(0,8))
+
         self.btn_sort_asc=ctk.CTkButton(left,text="Prioridade ↑",command=self.sort_by_priority_asc,width=140)
         self._style_yellow_button(self.btn_sort_asc); self.btn_sort_asc.pack(side="left", padx=8)
+
         self.btn_sort_desc=ctk.CTkButton(left,text="Prioridade ↓",command=self.sort_by_priority_desc,width=140)
         self._style_yellow_button(self.btn_sort_desc); self.btn_sort_desc.pack(side="left", padx=8)
+
         right=ctk.CTkFrame(actions, fg_color=theme["bg2"]); right.pack(side="right")
-        # Badge "Removidos (N)" fixo para reabrir painel quando fechado
         self.btn_removed_badge = ctk.CTkButton(right, text="Removidos (0)", width=150,
                                                fg_color=OPX_YELLOW, hover_color="#ffcc33",
                                                text_color="#0F172A", corner_radius=12,
@@ -528,7 +530,7 @@ class SimpleTable(ctk.CTk):
         for c in self.colunas_exibidas:
             self.reported_tree.heading(c, text=c, anchor="center"); self.reported_tree.column(c, anchor="center", width=140)
 
-        # PAINÉIS NOVOS/REMOVIDOS – em Dark ficam 100% pretos
+        # PAINÉIS NOVOS/REMOVIDOS
         self._novos_frame=ctk.CTkFrame(container, fg_color=("#000000" if self.appearance.get()=="Dark" else theme["bg2"]))
         self._removed_frame=ctk.CTkFrame(container, fg_color=("#000000" if self.appearance.get()=="Dark" else theme["bg2"]))
         self._novos_frame.pack(fill="x", padx=4, pady=(0,8)); self._removed_frame.pack(fill="x", padx=4, pady=(0,8))
@@ -547,7 +549,6 @@ class SimpleTable(ctk.CTk):
         except Exception:
             mon=pd.DataFrame()
         self.df_novos, self.df_removed = compare_new_removed(self.df_final, mon)
-        # Harmoniza prioridades e badges
         self.df_final=ensure_badges(self.df_final)
         self.df_novos=ensure_badges(denan(self.df_novos))
         self.df_removed=ensure_badges(denan(self.df_removed))
@@ -578,7 +579,6 @@ class SimpleTable(ctk.CTk):
         def run():
             try:
                 s=0
-                # 1) Baixar do Monday
                 s+=1; self.after(0, ui_prog, s, "Obtendo dados…")
                 self.after(0, lambda: dlg.add_log("Solicitando exportação do Monday (jsonExport)…"))
                 try:
@@ -591,18 +591,15 @@ class SimpleTable(ctk.CTk):
                     else:
                         self.after(0, lambda: dlg.add_log("(!) Módulo de exportação ausente; seguindo com JSON local."))
 
-                # 2) Ler JSON
                 s+=1; self.after(0, ui_prog, s, "Lendo JSON…")
                 self.after(0, lambda: dlg.add_log("Abrindo monday_export_all.json"))
                 mon_raw = get_monday_data_from_json() if os.path.exists("monday_export_all.json") else pd.DataFrame()
                 self.after(0, lambda: dlg.add_log(f"Itens no JSON bruto: {0 if mon_raw is None else len(mon_raw.index)}"))
 
-                # 3) Mapear colunas
                 s+=1; self.after(0, ui_prog, s, "Mapeando colunas…")
                 mon = map_monday_to_ptbr(mon_raw) if mon_raw is not None else pd.DataFrame()
                 self.after(0, lambda: dlg.add_log(f"Itens após mapa pt-BR: {0 if mon is None else len(mon.index)}"))
 
-                # 4) Planilha local
                 s+=1; self.after(0, ui_prog, s, "Carregando planilha…")
                 self.after(0, lambda: dlg.add_log("Lendo ListaAtualizada.xlsx (sheet 'Reparos')"))
                 lista = read_lista_excel()
@@ -611,12 +608,10 @@ class SimpleTable(ctk.CTk):
                 else:
                     self.df_final = pd.DataFrame(columns=["_item_id"]+COLS_UI)
 
-                # 5) Novos/Removidos
                 s+=1; self.after(0, ui_prog, s, "Comparando itens…")
                 self.df_novos, self.df_removed = compare_new_removed(self.df_final, mon)
                 self.after(0, lambda: dlg.add_log(f"Novos: {0 if self.df_novos is None else len(self.df_novos.index)}; Removidos: {0 if self.df_removed is None else len(self.df_removed.index)}"))
 
-                # 6) Atualizações de campos permitidos
                 s+=1; self.after(0, ui_prog, s, "Atualizando campos…")
                 cols = ["Elemento","N° Proposta","Cliente","SN","Prioridade","Data de Submissão"]
                 upd, _ = apply_updates_from_monday(self.df_final, mon, cols)
@@ -624,7 +619,6 @@ class SimpleTable(ctk.CTk):
                     self._mark_dirty(True)
                 self.after(0, lambda: dlg.add_log(f"Células atualizadas: {upd}"))
 
-                # 7) Harmonização
                 s+=1; self.after(0, ui_prog, s, "Harmonizando…")
                 if not mon.empty and not self.df_final.empty and "_item_id" in self.df_final.columns and "_item_id" in mon.columns:
                     cur=set(mon["_item_id"].astype(str).str.strip()); before=len(self.df_final)
@@ -634,7 +628,6 @@ class SimpleTable(ctk.CTk):
                         self._mark_dirty(True)
                     self.after(0, lambda: dlg.add_log(f"Lista principal: {before} → {after} (após harmonização)"))
 
-                # 8) Render
                 s+=1; self.after(0, ui_prog, s, "Renderizando…")
                 self.df_final=ensure_badges(denan(self.df_final)); self.df_removed=ensure_badges(denan(self.df_removed))
                 self.after(0, self.render_main_table)
@@ -642,7 +635,6 @@ class SimpleTable(ctk.CTk):
                 self.after(0, self._render_removed_panel)
                 self.after(0, lambda: dlg.add_log("Render concluído."))
 
-                # Fechar/Resumo
                 self.after(0, ui_finish,
                         0 if self.df_novos is None else len(self.df_novos.index),
                         0 if self.df_removed is None else len(self.df_removed.index),
@@ -657,7 +649,6 @@ class SimpleTable(ctk.CTk):
         threading.Thread(target=run, daemon=True).start()
 
     def _enable_row_dnd(self):
-        # Estado do DnD com threshold
         self._dnd_active = False
         self._dnd_src_iid = None
         self._dnd_start_xy = None
@@ -674,7 +665,6 @@ class SimpleTable(ctk.CTk):
             self._dnd_src_iid = None
             self._dnd_start_xy = None
             return
-        # Apenas marca o ponto inicial; não ativa ainda
         self._dnd_src_iid = iid
         self._dnd_start_xy = (e.x_root, e.y_root)
         self._dnd_active = False
@@ -688,7 +678,7 @@ class SimpleTable(ctk.CTk):
             self._dnd_active = True
 
         if not self._dnd_active:
-            return  # clique simples, não reordena
+            return
 
         y = e.y
         h = self.reported_tree.winfo_height()
@@ -709,7 +699,6 @@ class SimpleTable(ctk.CTk):
             pass
 
     def _on_drag_release(self, e):
-        # Só reconstrói se houve arrasto real
         try:
             if self._dnd_active and self._dnd_src_iid:
                 self._rebuild_df_from_tree_order()
@@ -727,7 +716,6 @@ class SimpleTable(ctk.CTk):
         for iid in self.reported_tree.get_children(""):
             vals=self.reported_tree.item(iid,"values")
             row={c:vals[i] if i<len(vals) else "" for i,c in enumerate(self.colunas_exibidas)}
-            # _item_id invisível no Treeview → preserve do df_final pela combinação (Elemento,SN,Cliente) quando possível
             found=self.df_final[(self.df_final["Elemento"]==row.get("Elemento",""))&(self.df_final["SN"]==row.get("SN",""))]
             rid = found["_item_id"].iloc[0] if not found.empty else ""
             row["_item_id"]=rid
@@ -750,7 +738,6 @@ class SimpleTable(ctk.CTk):
         ctk.CTkLabel(self._novos_frame, text=f"Novos: {0 if self.df_novos is None else len(self.df_novos.index)}",
                      text_color=title_color).pack(anchor="w")
         if self.df_novos is None or self.df_novos.empty: return
-        # Treeview usa o mesmo estilo OPX (já preto no Dark)
         t=ttk.Treeview(self._novos_frame, columns=self.colunas_exibidas, show="headings", height=6, style="OPX.Treeview")
         t.pack(fill="x", pady=(6,0))
         for c in self.colunas_exibidas[:-1]:
@@ -776,7 +763,6 @@ class SimpleTable(ctk.CTk):
     def _render_removed_panel(self):
         for w in self._removed_frame.winfo_children():
             w.destroy()
-        # Atualiza contador e badge
         count = 0 if self.df_removed is None else len(self.df_removed.index)
         self._removed_count = count
         if self.btn_removed_badge:
@@ -786,7 +772,6 @@ class SimpleTable(ctk.CTk):
                 pass
 
         title_color = "#FFFFFF" if self.appearance.get()=="Dark" else THEMES["Light"]["fg"]
-        # Header com título e botão X (fecha/oculta o painel)
         header = ctk.CTkFrame(self._removed_frame, fg_color="transparent")
         header.pack(fill="x")
         ctk.CTkLabel(header, text=f"Removidos: {count}", text_color=title_color,
@@ -844,26 +829,20 @@ class SimpleTable(ctk.CTk):
         if not (0 <= w <= 53) or q < 0:
             show_error(self, "Regra inválida", "Semana 0–53 e capacidade ≥ 0."); return
 
-        # Confirmação 1: aplicar regra
-        c = ask_yes_no_cancel(self, "Aplicar regra", f"Aplicar a regra:\n\nSemana {w} → {q} targetts?\n\nIsso irá recalcular a distribuição.")
-        if c != "Sim":
-            return
-
-        # Confirmação 2: se já havia valor diferente para a MESMA semana
+        # Apenas confirma se a MESMA semana já tem regra e o valor for diferente
         prev = self._week_rule_log.get(w, None)
         if prev is not None and prev != q:
-            c2 = ask_yes_no_cancel(self, "Alterar regra existente",
-                                   f"Semana {w} já tinha {prev} targetts.\nAgora deseja alterar para {q} targetts?\n\nConfirmar alteração?")
-            if c2 != "Sim":
+            c = ask_yes_no(self, "Alterar regra existente",
+                           f"Semana {w} já tinha {prev} targetts.\nDeseja alterar para {q} targetts?")
+            if c != "Sim":
                 return
 
-        # Aplica de fato
+        # Aplica sem pop-up inicial
         self.week_overrides[w] = q
         self._week_rule_log[w] = q
         self._update_overrides_label()
         self.recalc_targets(keep_existing_week_caps=True, user_initiated=True)
         self.render_main_table()
-        show_info(self, "Regra aplicada", f"Semana {w} = {q}.")
         self._mark_dirty(True)
 
     def _clear_week_overrides(self):
@@ -880,20 +859,13 @@ class SimpleTable(ctk.CTk):
             if c not in self.df_final.columns: self.df_final[c]=""
         if "_item_id" not in self.df_final.columns: self.df_final["_item_id"]=""
         added=0; existing=set(self.df_final["_item_id"].astype(str).str.strip())
-        prio_can=self.df_final["Prioridade"].map(canonicalize_priority) if not self.df_final.empty else pd.Series(dtype=str)
         for _,r in self.df_novos.iterrows():
             rid=str(r.get("_item_id","")).strip()
             if rid and rid in existing: continue
             new={"_item_id":rid, "Status":r.get("Status",""),"Elemento":r.get("Elemento",""),
                  "N° Proposta":r.get("N° Proposta",""),"Cliente":r.get("Cliente",""),"SN":r.get("SN",""),
                  "Prioridade":with_priority_badge(r.get("Prioridade","")),"Data de Submissão":r.get("Data de Submissão",""),"Targetts":""}
-            p_new=canonicalize_priority(new["Prioridade"])
-            if self.df_final.empty:
-                self.df_final=pd.concat([self.df_final,pd.DataFrame([new])],ignore_index=True)
-                prio_can=pd.Series([p_new]); existing.add(rid); added+=1; continue
-            # insere mantendo posição relativa por prioridade (não mexe nos já existentes)
-            insert_idx=len(self.df_final.index)
-            self.df_final=self.df_final.iloc[:insert_idx].append(new, ignore_index=True)
+            self.df_final=pd.concat([self.df_final,pd.DataFrame([new])],ignore_index=True)
             existing.add(rid); added+=1
         self.df_novos=pd.DataFrame()
         self.render_main_table(); self._render_novos_panel(); self._mark_dirty(True)
@@ -902,7 +874,6 @@ class SimpleTable(ctk.CTk):
     def export_excel(self):
         if self.df_final is None: return
         df=denan(self.df_final.copy())
-        # remove badge de prioridade ao exportar
         df["Prioridade"]=df["Prioridade"].map(canonicalize_priority)
         write_lista_excel(df)
         show_info(self,"Salvo","Alterações salvas em ListaAtualizada.xlsx")
@@ -910,9 +881,8 @@ class SimpleTable(ctk.CTk):
 
     def _on_close(self):
         if not self._dirty: self.destroy(); return
-        c=ask_yes_no_cancel(self,"Sair","Deseja salvar as alterações antes de sair?\n\nSim: Salva e sai\nNão: Sai sem salvar\nCancelar: Volta ao app")
-        if c is None or c=="Cancelar": return
-        if c=="Sim":
+        c=ask_yes_no(self,"Sair","Deseja salvar as alterações antes de sair?")
+        if c == "Sim":
             try:self.export_excel()
             except Exception as e:
                 show_error(self,"Erro ao salvar",f"Falha ao salvar:\n{e}"); return
