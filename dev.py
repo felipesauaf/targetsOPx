@@ -1,9 +1,8 @@
-import os, json, threading, unicodedata, re, uuid
+import os, json, threading, unicodedata, re, uuid, sys
 from datetime import datetime, timedelta
 import pandas as pd
 import customtkinter as ctk
 from tkinter import ttk
-
 
 try:
     from jsonExport import dataMondaytoJson
@@ -47,16 +46,23 @@ ctk.set_default_color_theme("blue")
 COLS_UI = ["Status","Elemento","N° Proposta","Cliente","SN","Prioridade","Data de Submissão","Targetts"]
 
 PRIO_ORDER = {"SEVERA":0,"ALTA":1,"MEDIA":2,"BAIXA":3}
+
 def canonicalize_priority(v):
-    if v is None: return ""
-    s=str(v)
-    s=unicodedata.normalize("NFD", s).encode("ascii","ignore").decode().upper()
-    s=s.replace("Ó","O").replace("Õ","O")
-    s=re.sub(r"<[^>]*>","",s)
-    s=re.sub(r"\s+"," ",s).strip()
+    """Normaliza texto (remove acentos, colchetes e não-letras) e retorna SEVERA/ALTA/MEDIA/BAIXA ou string original."""
+    if v is None:
+        return ""
+    s = str(v)
+    # Remove badge, HTML e normaliza
+    s = unicodedata.normalize("NFD", s).encode("ascii", "ignore").decode().upper()
+    s = re.sub(r"<[^>]*>", "", s)
+    s = re.sub(r"\s+", " ", s).strip()
+    # Remove tudo que não é letra A-Z (isso tira [ ] etc.)
+    s_letters = re.sub(r"[^A-Z]+", "", s)
     for k in PRIO_ORDER:
-        if k in s: return k
-    return s
+        if k in s_letters:
+            return k
+    return s_letters or s
+
 
 def with_priority_badge(v):
     s=canonicalize_priority(v)
@@ -68,7 +74,7 @@ def ensure_badges(df):
         df=df.copy(); df["Prioridade"]=df["Prioridade"].map(with_priority_badge)
     return df
 
-def denan(df): 
+def denan(df):
     return pd.DataFrame() if df is None else df.fillna("")
 
 class ThemedMessage(ctk.CTkToplevel):
@@ -92,7 +98,6 @@ class ThemedMessage(ctk.CTkToplevel):
         self.bind("<Return>", lambda e:self._set_choice(buttons[default_index] if 0<=default_index<len(buttons) else buttons[0]))
         self.deiconify(); self._btns[default_index].focus_set()
         self.protocol("WM_DELETE_WINDOW", lambda: self._set_choice(None))
-
     def _set_choice(self,v): self.choice=v; self.destroy()
 
 def show_info(p,t,m):  d=ThemedMessage(p,t,m,"info",("OK",)); p.wait_window(d)
@@ -130,21 +135,53 @@ def map_monday_to_ptbr(df):
         if c not in df.columns: df[c]=""
     return denan(df[base])
 
-def read_lista_excel():
-    p=os.path.join(os.getcwd(),"ListaAtualizada.xlsx")
-    if not os.path.exists(p): return None
+# =========================
+#  Caminhos robustos ListaAtualizada.xlsx
+# =========================
+def _script_dir():
+    return os.path.dirname(os.path.abspath(__file__))
+
+def _parent_dir():
+    return os.path.dirname(_script_dir())
+
+def _lista_candidates():
+    name = "ListaAtualizada.xlsx"
+    return [
+        os.path.join(_script_dir(), name),
+        os.path.join(_parent_dir(), name),
+        os.path.join(os.getcwd(), name),
+    ]
+
+def _latest_existing(path_list):
+    existing = [(p, os.path.getmtime(p)) for p in path_list if os.path.exists(p)]
+    if not existing:
+        return None
+    existing.sort(key=lambda t: t[1], reverse=True)
+    return existing[0][0]  # caminho mais recente
+
+def resolve_lista_path():
+    """Escolhe o caminho mais recente/adequado para ListaAtualizada.xlsx (pai/script/cwd)."""
+    return _latest_existing(_lista_candidates())
+
+def read_lista_excel_at(path):
+    """Lê a planilha do caminho informado; retorna DataFrame ou None."""
+    if not path or not os.path.exists(path):
+        return None
     try:
-        df=pd.read_excel(p,sheet_name="Reparos")
+        df = pd.read_excel(path, sheet_name="Reparos")
         for c in COLS_UI:
-            if c not in df.columns: df[c]=""
-        if "_item_id" not in df.columns: df["_item_id"]=""
-        return denan(df[["_item_id"]+COLS_UI])
+            if c not in df.columns: df[c] = ""
+        if "_item_id" not in df.columns: df["_item_id"] = ""
+        return denan(df[["_item_id"] + COLS_UI])
     except Exception:
         return None
 
-def write_lista_excel(df):
-    p=os.path.join(os.getcwd(),"ListaAtualizada.xlsx")
-    df.to_excel(p, sheet_name="Reparos", index=False)
+def write_lista_excel_at(df, path):
+    """Escreve a planilha exatamente no caminho fornecido; se ausente, salva no dir do script."""
+    if not path:
+        path = os.path.join(_script_dir(), "ListaAtualizada.xlsx")
+    df.to_excel(path, sheet_name="Reparos", index=False)
+    return path
 
 def compare_new_removed(df_lista, df_monday):
     if df_lista is None: df_lista=pd.DataFrame(columns=["_item_id"]+COLS_UI)
@@ -288,6 +325,9 @@ class SimpleTable(ctk.CTk):
         self.df_final=pd.DataFrame(columns=["_item_id"]+self.colunas_exibidas)
         self.df_novos=pd.DataFrame(); self.df_removed=pd.DataFrame()
 
+        # Caminho de origem da ListaAtualizada.xlsx (para salvar no mesmo lugar)
+        self._lista_path = None
+
         self._img_logo=self._img_sun=self._img_moon=None
         self._removed_count = 0
         self._removed_collapsed = False
@@ -297,6 +337,56 @@ class SimpleTable(ctk.CTk):
         self._week_rule_log = {}
 
         self._setup_theme(); self._build_ui(); self.load_data_initial()
+
+    # ====== Assets (imagens) ======
+    def _asset_path(self, *parts):
+        """
+        Procura arquivo em locais comuns:
+        - <dir_do_script>/assets/...
+        - <dir_do_script>/...
+        - <dir_do_script>/../assets/...
+        - <dir_do_script>/../...
+        - cwd/assets/...
+        - cwd/...
+        - PyInstaller (sys._MEIPASS)
+        """
+        base_script = os.path.dirname(os.path.abspath(__file__))
+        parent_dir  = os.path.dirname(base_script)
+        base_bundle = getattr(sys, "_MEIPASS", None)
+
+        candidates = [
+            os.path.join(base_script, "assets", *parts),
+            os.path.join(base_script, *parts),
+            os.path.join(parent_dir,  "assets", *parts),
+            os.path.join(parent_dir,  *parts),
+            os.path.join(os.getcwd(),  "assets", *parts),
+            os.path.join(os.getcwd(),  *parts),
+        ]
+        if base_bundle:
+            candidates += [
+                os.path.join(base_bundle, "assets", *parts),
+                os.path.join(base_bundle, *parts),
+            ]
+        for p in candidates:
+            if os.path.exists(p):
+                return p
+        return None
+
+    def _load_images(self):
+        self._img_logo = self._img_sun = self._img_moon = None
+        if not PIL_AVAILABLE:
+            return
+        def _safe_load(fname, size):
+            p = self._asset_path(fname)
+            if not p: return None
+            try:
+                return ctk.CTkImage(light_image=Image.open(p), size=size)
+            except Exception:
+                return None
+        # opx.png está no mesmo diretório do dev.py; sun/moon no diretório pai no teu layout
+        self._img_logo = _safe_load("opx.png",  (80, 80))
+        self._img_sun  = _safe_load("sun.png",  (20, 20))
+        self._img_moon = _safe_load("moon.png", (20, 20))
 
     def _style_yellow_button(self, w):
         try:
@@ -320,7 +410,10 @@ class SimpleTable(ctk.CTk):
         except: pass
 
     def _restyle_inputs(self):
-        for w in (getattr(self,"entry_week_num",None), getattr(self,"entry_week_qty",None), getattr(self,"entry_date",None)):
+        for w in (getattr(self,"entry_week_num",None),
+                  getattr(self,"entry_week_qty",None),
+                  getattr(self,"entry_date",None),
+                  getattr(self,"entry_search",None)):
             if w: self._style_entry(w)
 
     def _setup_theme(self):
@@ -343,28 +436,37 @@ class SimpleTable(ctk.CTk):
                    relief="flat", bordercolor=theme["header_bg"])
         s.map("OPX.Treeview.Heading", background=[("active",theme["header_bg"])], foreground=[("!disabled",theme["header_fg"])])
 
+    def _load_images_and_theme(self):
+        self._load_images()
+        self._setup_tree_style()
+
     def _load_images(self):
-        self._img_logo=None; self._img_sun=None; self._img_moon=None
-        if PIL_AVAILABLE:
+        # already defined above; keep method here for organization
+        pass
+
+    def _load_images(self):
+        # redefine (Python uses last definition) – keep as above to avoid confusion
+        self._img_logo = self._img_sun = self._img_moon = None
+        if not PIL_AVAILABLE:
+            return
+        def _safe_load(fname, size):
+            p = self._asset_path(fname)
+            if not p: return None
             try:
-                if os.path.exists("assets/opx.png"):
-                    self._img_logo = ctk.CTkImage(light_image=Image.open("assets/opx.png"), size=(42,42))
-            except Exception: self._img_logo=None
-            try:
-                if os.path.exists("assets/sun.png"):
-                    self._img_sun  = ctk.CTkImage(light_image=Image.open("assets/sun.png"), size=(20,20))
-            except Exception: self._img_sun=None
-            try:
-                if os.path.exists("assets/moon.png"):
-                    self._img_moon = ctk.CTkImage(light_image=Image.open("assets/moon.png"), size=(20,20))
-            except Exception: self._img_moon=None
+                return ctk.CTkImage(light_image=Image.open(p), size=size)
+            except Exception:
+                return None
+        self._img_logo = _safe_load("opx.png",  (42, 42))
+        self._img_sun  = _safe_load("sun.png",  (20, 20))
+        self._img_moon = _safe_load("moon.png", (20, 20))
 
     def _restyle_action_buttons(self):
         for w in (getattr(self,"btn_reload",None), getattr(self,"btn_save",None),
                   getattr(self,"btn_transfer",None),
                   getattr(self,"btn_sort_asc",None), getattr(self,"btn_sort_desc",None),
                   getattr(self,"btn_apply_week",None), getattr(self,"btn_clear_weeks",None),
-                  getattr(self,"btn_removed_badge",None)):
+                  getattr(self,"btn_removed_badge",None),
+                  getattr(self,"btn_clear_search",None)):
             if w: self._style_yellow_button(w)
 
     def _style_theme_button(self):
@@ -503,6 +605,27 @@ class SimpleTable(ctk.CTk):
         self.btn_sort_desc=ctk.CTkButton(left,text="Prioridade ↓",command=self.sort_by_priority_desc,width=140)
         self._style_yellow_button(self.btn_sort_desc); self.btn_sort_desc.pack(side="left", padx=8)
 
+        # 🔍 BUSCA (lado direito da barra de ações)
+        search_frame = ctk.CTkFrame(actions, fg_color=theme["bg2"])
+        search_frame.pack(side="right", padx=(8, 0))
+
+        self.search_var = ctk.StringVar()
+        self.entry_search = ctk.CTkEntry(
+            search_frame, width=220, height=36,
+            placeholder_text="🔍 Buscar...",
+            textvariable=self.search_var, justify="left"
+        )
+        self._style_entry(self.entry_search)
+        self.entry_search.pack(side="left", padx=(0, 6))
+        self.entry_search.bind("<KeyRelease>", lambda e: self._apply_search())
+
+        self.btn_clear_search = ctk.CTkButton(
+            search_frame, text="❌", width=36, height=36,
+            command=self._clear_search
+        )
+        self._style_yellow_button(self.btn_clear_search)
+        self.btn_clear_search.pack(side="left")
+
         right=ctk.CTkFrame(actions, fg_color=theme["bg2"]); right.pack(side="right")
         self.btn_removed_badge = ctk.CTkButton(right, text="Removidos (0)", width=150,
                                                fg_color=OPX_YELLOW, hover_color="#ffcc33",
@@ -541,8 +664,15 @@ class SimpleTable(ctk.CTk):
         elif not v and self._dirty: self._dirty=False; self.title(self._base_title)
 
     def load_data_initial(self):
-        df_lista=read_lista_excel()
-        self.df_final=denan(df_lista.copy()) if df_lista is not None and not df_lista.empty else pd.DataFrame(columns=["_item_id"]+COLS_UI)
+        # Sempre resolve a ListaAtualizada no início, pegando a mais recente
+        self._lista_path = resolve_lista_path()
+
+        df_lista = read_lista_excel_at(self._lista_path)
+        if df_lista is not None and not df_lista.empty:
+            self.df_final = denan(df_lista.copy())
+        else:
+            self.df_final = pd.DataFrame(columns=["_item_id"] + COLS_UI)
+
         try:
             mon_raw=get_monday_data_from_json() if os.path.exists("monday_export_all.json") else pd.DataFrame()
             mon=map_monday_to_ptbr(mon_raw) if mon_raw is not None else pd.DataFrame()
@@ -560,7 +690,7 @@ class SimpleTable(ctk.CTk):
         dlg.add_log("Iniciando sincronização…")
         self.btn_reload.configure(state="disabled")
 
-        def ui_prog(s,t=""): 
+        def ui_prog(s,t=""):
             try:
                 if dlg.cancelled: return
                 dlg.update_progress(s,t)
@@ -601,12 +731,15 @@ class SimpleTable(ctk.CTk):
                 self.after(0, lambda: dlg.add_log(f"Itens após mapa pt-BR: {0 if mon is None else len(mon.index)}"))
 
                 s+=1; self.after(0, ui_prog, s, "Carregando planilha…")
-                self.after(0, lambda: dlg.add_log("Lendo ListaAtualizada.xlsx (sheet 'Reparos')"))
-                lista = read_lista_excel()
+                self.after(0, lambda: dlg.add_log("Localizando ListaAtualizada.xlsx (pai/script/cwd)"))
+                # sempre re-resolve o caminho para permitir substituição externa
+                self._lista_path = resolve_lista_path()
+                lista = read_lista_excel_at(self._lista_path)
                 if lista is not None and not lista.empty:
                     self.df_final = denan(lista.copy())
                 else:
-                    self.df_final = pd.DataFrame(columns=["_item_id"]+COLS_UI)
+                    self.df_final = pd.DataFrame(columns=["_item_id"] + COLS_UI)
+                self.after(0, lambda: dlg.add_log(f"Planilha: {self._lista_path or 'NÃO ENCONTRADA'}"))
 
                 s+=1; self.after(0, ui_prog, s, "Comparando itens…")
                 self.df_novos, self.df_removed = compare_new_removed(self.df_final, mon)
@@ -653,7 +786,6 @@ class SimpleTable(ctk.CTk):
         self._dnd_src_iid = None
         self._dnd_start_xy = None
         self._dnd_threshold = 6  # px
-
         self.reported_tree.bind("<ButtonPress-1>", self._on_drag_start)
         self.reported_tree.bind("<B1-Motion>", self._on_drag_motion)
         self.reported_tree.bind("<ButtonRelease-1>", self._on_drag_release)
@@ -676,20 +808,13 @@ class SimpleTable(ctk.CTk):
         dy = abs(e.y_root - self._dnd_start_xy[1])
         if not self._dnd_active and (dx > self._dnd_threshold or dy > self._dnd_threshold):
             self._dnd_active = True
-
         if not self._dnd_active:
             return
-
-        y = e.y
-        h = self.reported_tree.winfo_height()
-        if y < 20:
-            self.reported_tree.yview_scroll(-1, "units")
-        elif y > h - 20:
-            self.reported_tree.yview_scroll(1, "units")
-
+        y = e.y; h = self.reported_tree.winfo_height()
+        if y < 20: self.reported_tree.yview_scroll(-1, "units")
+        elif y > h - 20: self.reported_tree.yview_scroll(1, "units")
         tgt = self.reported_tree.identify_row(y)
-        if not tgt or tgt == self._dnd_src_iid:
-            return
+        if not tgt or tgt == self._dnd_src_iid: return
         parent = ""
         ch = list(self.reported_tree.get_children(parent))
         try:
@@ -770,25 +895,19 @@ class SimpleTable(ctk.CTk):
                 self.btn_removed_badge.configure(text=f"Removidos ({count})")
             except Exception:
                 pass
-
         title_color = "#FFFFFF" if self.appearance.get()=="Dark" else THEMES["Light"]["fg"]
-        header = ctk.CTkFrame(self._removed_frame, fg_color="transparent")
-        header.pack(fill="x")
+        header = ctk.CTkFrame(self._removed_frame, fg_color="transparent"); header.pack(fill="x")
         ctk.CTkLabel(header, text=f"Removidos: {count}", text_color=title_color,
                      font=ctk.CTkFont(size=16, weight="bold")).pack(side="left", pady=(2,0))
         btn_close = ctk.CTkButton(header, text="×", width=28, height=28, corner_radius=8,
                                   fg_color=OPX_YELLOW, hover_color="#ffcc33", text_color="#0F172A",
                                   command=self._hide_removed_panel)
         btn_close.pack(side="right")
-
-        if count == 0:
-            return
-
+        if count == 0: return
         t=ttk.Treeview(self._removed_frame, columns=self.colunas_exibidas, show="headings", height=5, style="OPX.Treeview")
         t.pack(fill="x", pady=(6,0))
         for c in self.colunas_exibidas:
-            t.heading(c, text=c, anchor="center")
-            t.column(c, anchor="center", width=140)
+            t.heading(c, text=c, anchor="center"); t.column(c, anchor="center", width=140)
         for _, r in self.df_removed.iterrows():
             t.insert("", "end", values=[r.get(c, "") for c in self.colunas_exibidas])
 
@@ -828,18 +947,12 @@ class SimpleTable(ctk.CTk):
             show_error(self, "Regra inválida", "Preencha 'Semana' e 'Capacidade' com números inteiros."); return
         if not (0 <= w <= 53) or q < 0:
             show_error(self, "Regra inválida", "Semana 0–53 e capacidade ≥ 0."); return
-
-        # Apenas confirma se a MESMA semana já tem regra e o valor for diferente
         prev = self._week_rule_log.get(w, None)
         if prev is not None and prev != q:
             c = ask_yes_no(self, "Alterar regra existente",
                            f"Semana {w} já tinha {prev} targetts.\nDeseja alterar para {q} targetts?")
-            if c != "Sim":
-                return
-
-        # Aplica sem pop-up inicial
-        self.week_overrides[w] = q
-        self._week_rule_log[w] = q
+            if c != "Sim": return
+        self.week_overrides[w] = q; self._week_rule_log[w] = q
         self._update_overrides_label()
         self.recalc_targets(keep_existing_week_caps=True, user_initiated=True)
         self.render_main_table()
@@ -852,32 +965,155 @@ class SimpleTable(ctk.CTk):
 
     def _transfer_all_novos(self):
         if self.df_novos is None or self.df_novos.empty:
-            show_info(self,"Transferir Novos","Não há itens novos."); return
+            show_info(self,"Transferir Novos","Não há itens novos.")
+            return
+
         if self.df_final is None or self.df_final.empty:
-            self.df_final=pd.DataFrame(columns=["_item_id"]+self.colunas_exibidas)
+            self.df_final = pd.DataFrame(columns=["_item_id"] + self.colunas_exibidas)
+
+        # Garante colunas
         for c in self.colunas_exibidas:
-            if c not in self.df_final.columns: self.df_final[c]=""
-        if "_item_id" not in self.df_final.columns: self.df_final["_item_id"]=""
-        added=0; existing=set(self.df_final["_item_id"].astype(str).str.strip())
-        for _,r in self.df_novos.iterrows():
-            rid=str(r.get("_item_id","")).strip()
-            if rid and rid in existing: continue
-            new={"_item_id":rid, "Status":r.get("Status",""),"Elemento":r.get("Elemento",""),
-                 "N° Proposta":r.get("N° Proposta",""),"Cliente":r.get("Cliente",""),"SN":r.get("SN",""),
-                 "Prioridade":with_priority_badge(r.get("Prioridade","")),"Data de Submissão":r.get("Data de Submissão",""),"Targetts":""}
-            self.df_final=pd.concat([self.df_final,pd.DataFrame([new])],ignore_index=True)
-            existing.add(rid); added+=1
-        self.df_novos=pd.DataFrame()
-        self.render_main_table(); self._render_novos_panel(); self._mark_dirty(True)
-        show_info(self,"Transferência concluída",f"{added} item(ns) adicionado(s) à lista.")
+            if c not in self.df_final.columns:
+                self.df_final[c] = ""
+        if "_item_id" not in self.df_final.columns:
+            self.df_final["_item_id"] = ""
+
+        # 1) Filtra somente realmente novos por _item_id
+        existentes = set(self.df_final["_item_id"].astype(str).str.strip())
+        novos_rows = []
+        for _, r in self.df_novos.iterrows():
+            rid = str(r.get("_item_id", "")).strip()
+            if rid and rid in existentes:
+                continue
+            novos_rows.append({
+                "_item_id": rid,
+                "Status": r.get("Status", ""),
+                "Elemento": r.get("Elemento", ""),
+                "N° Proposta": r.get("N° Proposta", ""),
+                "Cliente": r.get("Cliente", ""),
+                "SN": r.get("SN", ""),
+                # badge visual
+                "Prioridade": with_priority_badge(r.get("Prioridade", "")),
+                "Data de Submissão": r.get("Data de Submissão", ""),
+                "Targetts": ""  # será preenchido via recalc_targets
+            })
+            existentes.add(rid)
+
+        if not novos_rows:
+            show_info(self,"Transferir Novos","Sem itens novos para adicionar.")
+            return
+
+        # 2) Mapa de prioridade -> novas linhas
+        novos_por_prio = {}
+        for row in novos_rows:
+            p = canonicalize_priority(row.get("Prioridade", ""))
+            novos_por_prio.setdefault(p, []).append(row)
+
+        # 3) Descobre a sequência de prioridades já existente (na ordem em que aparecem),
+        #    e a última posição (índice) de cada prioridade no df_final
+        base_records = self.df_final.to_dict("records")
+        ordem_existente = []          # prioridades na ordem em que aparecem
+        last_index = {}               # prioridade -> último índice
+        for i, row in enumerate(base_records):
+            p = canonicalize_priority(row.get("Prioridade", ""))
+            if p not in ordem_existente:
+                ordem_existente.append(p)
+            last_index[p] = i
+
+        # 4) Monta a nova lista de registros preservando a ordem existente
+        #    e inserindo os NOVOS imediatamente após o último item do mesmo bloco de prioridade.
+        resultado = []
+        inserido_prio = set()
+
+        for i, row in enumerate(base_records):
+            resultado.append(row)
+            p = canonicalize_priority(row.get("Prioridade", ""))
+            # Se este é o último item desse bloco, coloca os novos dessa prioridade agora
+            if last_index.get(p, -1) == i and p in novos_por_prio and p not in inserido_prio:
+                resultado.extend(novos_por_prio[p])
+                inserido_prio.add(p)
+
+        # 5) Se existem prioridades NOVAS que não existiam antes, precisamos decidir onde inserir:
+        #    - após o bloco da prioridade mais alta que exista acima dela; se nenhuma, ao final.
+        faltantes = [p for p in novos_por_prio.keys() if p not in inserido_prio]
+
+        def prio_rank(p):
+            return PRIO_ORDER.get(p, 999)
+
+        if faltantes:
+            # Calcula posição de inserção: após o último bloco de alguma prioridade "maior" presente,
+            # respeitando a ordem atual. Se não houver nenhuma, no final.
+            # Para simplificar, vamos inserir no final mantendo a ordem de severidade (SEVERA->ALTA->MEDIA->BAIXA).
+            for p in sorted(faltantes, key=prio_rank):
+                resultado.extend(novos_por_prio[p])
+
+        # 6) Atualiza df_final com o resultado e limpa painel de novos
+        self.df_final = pd.DataFrame(resultado, columns=["_item_id"] + self.colunas_exibidas)
+        self.df_novos = pd.DataFrame()
+
+        # 7) Recalcula os Targetts para preencher os novos
+        #    Mantém as capacidades já existentes das semanas (para mexer o mínimo possível).
+        self.recalc_targets(keep_existing_week_caps=True, user_initiated=True)
+
+        # 8) Re-render
+        self.render_main_table()
+        self._render_novos_panel()
+        self._mark_dirty(True)
+        show_info(self, "Transferência concluída", f"{len(novos_rows)} item(ns) adicionado(s) na sua prioridade.")
+
 
     def export_excel(self):
         if self.df_final is None: return
         df=denan(self.df_final.copy())
         df["Prioridade"]=df["Prioridade"].map(canonicalize_priority)
-        write_lista_excel(df)
-        show_info(self,"Salvo","Alterações salvas em ListaAtualizada.xlsx")
+        saved_path = write_lista_excel_at(df, self._lista_path)
+        self._lista_path = saved_path
+        show_info(self,"Salvo",f"Alterações salvas em:\n{saved_path}")
         self._mark_dirty(False)
+
+    # ===== 🔍 BUSCA =====
+    def _apply_search(self):
+        query = (self.search_var.get() or "").strip().lower()
+        if not query:
+            self.render_main_table()
+            return
+        if self.df_final is None or self.df_final.empty:
+            return
+        mask = self.df_final.apply(
+            lambda row: any(query in str(val).lower() for val in row[self.colunas_exibidas].values),
+            axis=1
+        )
+        filtered = self.df_final[mask]
+        self._render_filtered_table(filtered)
+
+    def _render_filtered_table(self, df_filtered):
+        for w in self.table_shell.winfo_children():
+            if getattr(w, "_is_scroll", False): continue
+            w.destroy()
+        self._setup_tree_style()
+        t = ttk.Treeview(
+            self.table_shell, columns=self.colunas_exibidas,
+            show="headings", style="OPX.Treeview",
+            yscrollcommand=self.scroll_y.set,
+            xscrollcommand=self.scroll_x.set,
+            selectmode="extended"
+        )
+        t.pack(fill="both", expand=True)
+        self.scroll_y.configure(command=t.yview)
+        self.scroll_x.configure(command=t.xview)
+        for c in self.colunas_exibidas:
+            t.heading(c, text=c, anchor="center")
+            t.column(c, anchor="center", width=140)
+        if df_filtered is not None and not df_filtered.empty:
+            for _, r in df_filtered.iterrows():
+                t.insert("", "end", values=[r.get(c, "") for c in self.colunas_exibidas])
+
+    def _clear_search(self):
+        try:
+            self.search_var.set("")
+        except Exception:
+            pass
+        self.render_main_table()
 
     def _on_close(self):
         if not self._dirty: self.destroy(); return
