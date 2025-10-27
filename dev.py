@@ -219,6 +219,30 @@ def _parse_week_from_label(lbl):
     if not lbl: return None
     m=re.search(r"Semana\s+(\d{1,2})\b", str(lbl)); return int(m.group(1)) if m else None
 
+def _next_iso_week(wk):
+    """Próxima semana ISO (1..53), com wrap."""
+    if wk is None: 
+        return 1
+    return 1 if wk >= 53 else wk + 1
+
+def _compute_week_calendar(start_date_str, horizon_weeks=180):
+    """
+    Mapa {iso_week -> monday_date} começando NA SEMANA SEGUINTE à data inicial,
+    igual ao comportamento do app.
+    """
+    base = datetime.strptime(start_date_str, "%d/%m/%Y")
+    week_monday = monday_of_week(base)
+    cur = week_monday + timedelta(days=7)  # próxima semana após a base
+    cal = {}
+    for _ in range(int(horizon_weeks)):
+        wk = int(cur.isocalendar()[1])
+        cal.setdefault(wk, cur)  # guarda a primeira segunda dessa semana ISO
+        cur += timedelta(days=7)
+    cal.setdefault(0, base)  # “0” continua aceito como especial
+    return cal
+
+
+
 def generate_targets(n,start_date_str="28/08/2025",default_per_week=5,week_overrides=None,start_from_next_week=True):
     wo=week_overrides or {}
     start=datetime.strptime(start_date_str,"%d/%m/%Y")
@@ -230,7 +254,8 @@ def generate_targets(n,start_date_str="28/08/2025",default_per_week=5,week_overr
         wk=iso(cur); cap=wo.get(wk, default_per_week); cap=max(0,cap)
         for _ in range(cap):
             if ass>=n: break
-            t.append(f"Semana {wk:02d} - {cur.strftime('%d/%m/%Y')}"); ass+=1
+            t.append(f"Semana {wk:02d} - {cur.strftime('%d/%m/%Y')}")
+            ass+=1
         cur+=timedelta(days=7)
     return t
 
@@ -384,7 +409,7 @@ class SimpleTable(ctk.CTk):
             except Exception:
                 return None
         # opx.png está no mesmo diretório do dev.py; sun/moon no diretório pai no teu layout
-        self._img_logo = _safe_load("opx.png",  (80, 80))
+        self._img_logo = _safe_load("opx.png",  (120, 120))
         self._img_sun  = _safe_load("sun.png",  (20, 20))
         self._img_moon = _safe_load("moon.png", (20, 20))
 
@@ -786,6 +811,8 @@ class SimpleTable(ctk.CTk):
         self._dnd_src_iid = None
         self._dnd_start_xy = None
         self._dnd_threshold = 6  # px
+        self._dnd_snapshot_targets = []  # <- snapshot de Targetts por posição
+
         self.reported_tree.bind("<ButtonPress-1>", self._on_drag_start)
         self.reported_tree.bind("<B1-Motion>", self._on_drag_motion)
         self.reported_tree.bind("<ButtonRelease-1>", self._on_drag_release)
@@ -796,10 +823,24 @@ class SimpleTable(ctk.CTk):
             self._dnd_active = False
             self._dnd_src_iid = None
             self._dnd_start_xy = None
+            self._dnd_snapshot_targets = []
             return
+
         self._dnd_src_iid = iid
         self._dnd_start_xy = (e.x_root, e.y_root)
         self._dnd_active = False
+
+        # Snapshot dos Targetts na ordem VISUAL atual (por posição)
+        self._dnd_snapshot_targets = []
+        order_iids = list(self.reported_tree.get_children(""))
+        # pega os valores pela mesma ordem do Treeview
+        for iid_row in order_iids:
+            vals = self.reported_tree.item(iid_row, "values")
+            try:
+                col_idx = self.colunas_exibidas.index("Targetts")
+                self._dnd_snapshot_targets.append(vals[col_idx] if col_idx < len(vals) else "")
+            except ValueError:
+                self._dnd_snapshot_targets.append("")
 
     def _on_drag_motion(self, e):
         if not self._dnd_start_xy or not self._dnd_src_iid:
@@ -810,11 +851,18 @@ class SimpleTable(ctk.CTk):
             self._dnd_active = True
         if not self._dnd_active:
             return
-        y = e.y; h = self.reported_tree.winfo_height()
-        if y < 20: self.reported_tree.yview_scroll(-1, "units")
-        elif y > h - 20: self.reported_tree.yview_scroll(1, "units")
+
+        y = e.y
+        h = self.reported_tree.winfo_height()
+        if y < 20:
+            self.reported_tree.yview_scroll(-1, "units")
+        elif y > h - 20:
+            self.reported_tree.yview_scroll(1, "units")
+
         tgt = self.reported_tree.identify_row(y)
-        if not tgt or tgt == self._dnd_src_iid: return
+        if not tgt or tgt == self._dnd_src_iid:
+            return
+
         parent = ""
         ch = list(self.reported_tree.get_children(parent))
         try:
@@ -826,26 +874,64 @@ class SimpleTable(ctk.CTk):
     def _on_drag_release(self, e):
         try:
             if self._dnd_active and self._dnd_src_iid:
+                # 1) Reconstroi df_final obedecendo a ORDEM VISUAL atual
                 self._rebuild_df_from_tree_order()
-                self.recalc_targets(keep_existing_week_caps=True, user_initiated=True)
-                self.render_main_table()
-                self._mark_dirty(True)
+
+                # 2) Reaplica os Targetts da POSIÇÃO (snapshot) na nova ordem
+                if self._dnd_snapshot_targets:
+                    # ajusta tamanho (por segurança)
+                    snap = list(self._dnd_snapshot_targets)
+                    if len(snap) < len(self.df_final.index):
+                        snap.extend([""] * (len(self.df_final.index) - len(snap)))
+                    elif len(snap) > len(self.df_final.index):
+                        snap = snap[:len(self.df_final.index)]
+
+                    self.df_final["Targetts"] = snap
+
+                    # preenche SOMENTE os vazios (se houver), respeitando regras/capacidade
+                    # (não redistribui quem já tem)
+                    if any(str(x).strip() == "" for x in self.df_final["Targetts"].tolist()):
+                        self.recalc_targets(
+                            keep_existing_week_caps=True,
+                            user_initiated=True,
+                            redistribute=False
+                        )
+                    else:
+                        self._mark_dirty(True)
+                        self.render_main_table()
         finally:
             self._dnd_active = False
             self._dnd_src_iid = None
             self._dnd_start_xy = None
+            self._dnd_snapshot_targets = []
 
     def _rebuild_df_from_tree_order(self):
-        if self.df_final is None: return
-        rows=[]
+        """Reconstrói df_final obedecendo a ordem visual atual do Treeview,
+        preservando os valores de cada linha (menos Targetts, que será reatribuído depois)."""
+        if self.df_final is None:
+            return
+        rows = []
         for iid in self.reported_tree.get_children(""):
-            vals=self.reported_tree.item(iid,"values")
-            row={c:vals[i] if i<len(vals) else "" for i,c in enumerate(self.colunas_exibidas)}
-            found=self.df_final[(self.df_final["Elemento"]==row.get("Elemento",""))&(self.df_final["SN"]==row.get("SN",""))]
-            rid = found["_item_id"].iloc[0] if not found.empty else ""
-            row["_item_id"]=rid
+            vals = self.reported_tree.item(iid, "values")
+            row = {c: (vals[i] if i < len(vals) else "") for i, c in enumerate(self.colunas_exibidas)}
+
+            # tenta resgatar _item_id pelo par (Elemento, SN)
+            rid = ""
+            try:
+                elem = row.get("Elemento", "")
+                sn = row.get("SN", "")
+                found = self.df_final[
+                    (self.df_final["Elemento"] == elem) & (self.df_final["SN"] == sn)
+                ]
+                if not found.empty:
+                    rid = found["_item_id"].iloc[0]
+            except Exception:
+                pass
+
+            row["_item_id"] = rid
             rows.append(row)
-        self.df_final = pd.DataFrame(rows)
+
+        self.df_final = pd.DataFrame(rows, columns=["_item_id"] + self.colunas_exibidas)
 
     def sort_by_priority_asc(self):
         if self.df_final is None or self.df_final.empty: return
@@ -924,39 +1010,350 @@ class SimpleTable(ctk.CTk):
         txt="Sem regras" if not self.week_overrides else "Regras: " + ", ".join(f"S{w}:{q}" for w,q in sorted(self.week_overrides.items()))
         if self._overrides_label: self._overrides_label.configure(text=txt)
 
-    def recalc_targets(self, keep_existing_week_caps=True, user_initiated=False):
-        if self.df_final is None: return
-        n=len(self.df_final.index)
-        try: maxw=int(self.max_per_week.get())
-        except: maxw=5
-        start=self.start_date_str.get() or "28/08/2025"
-        eff={}
-        if keep_existing_week_caps: eff.update(self._infer_week_caps_from_current_df())
-        eff.update(self.week_overrides)
-        new=generate_targets(n, start_date_str=start, default_per_week=maxw, week_overrides=eff, start_from_next_week=True)
-        if "Targetts" not in self.df_final.columns or self.df_final["Targetts"].tolist()!=new:
-            self.df_final["Targetts"]=new
-            if user_initiated: self._mark_dirty(True)
+    def recalc_targets(self, keep_existing_week_caps=True, user_initiated=False, redistribute=False):
+        """
+        - redistribute=False (default): NÃO redistribui quem já tem Targetts.
+        Só normaliza rótulos e preenche vazios respeitando capacidades (regras > max_per_week).
+        -> Use quando aplicar regra.
+        - redistribute=True: empacota a lista de cima pra baixo em blocos por semana,
+        começando na PRIMEIRA semana já existente na tela, respeitando capacidades.
+        NÃO reordena linhas; só reatribui Targetts.
+        -> Use após drag & drop.
+        """
+        if self.df_final is None or self.df_final.empty:
+            return
+
+        # capacidade padrão (mantém 5, como você pediu)
+        try:
+            maxw = int(self.max_per_week.get())
+        except Exception:
+            maxw = 5
+
+        start = (self.start_date_str.get() or "28/08/2025").strip()
+        cal = _compute_week_calendar(start, horizon_weeks=240)  # mapeia {wk -> monday_date}
+
+        df = self.df_final.copy()
+        if "Targetts" not in df.columns:
+            df["Targetts"] = ""
+
+        def label(wk, d): 
+            return f"Semana {wk:02d} - {d.strftime('%d/%m/%Y')}"
+        def capacity_of(wk: int) -> int:
+            return max(0, self.week_overrides.get(wk, maxw))
+
+        # ============= EMPACOTAMENTO (pós DnD) =============
+        if redistribute:
+            # 1) âncora = primeira semana já existente na ordem atual
+            anchor_wk = None
+            for i in range(len(df.index)):
+                wk = _parse_week_from_label(str(df.at[i, "Targetts"]).strip())
+                if wk is not None:
+                    anchor_wk = wk
+                    break
+
+            if anchor_wk is None:
+                weeks_in_cal = sorted([w for w in cal.keys() if w != 0])
+                anchor_wk = weeks_in_cal[0] if weeks_in_cal else 1
+
+            # mapa dinâmico semana->data (pode crescer)
+            wk_date = dict(cal)
+            counts = {}
+            cur_wk = anchor_wk
+
+            def next_week_with_slot():
+                nonlocal cur_wk
+                for _ in range(5000):  # guarda-chuva
+                    used = counts.get(cur_wk, 0)
+                    cap  = capacity_of(cur_wk)
+                    if used < cap:
+                        counts[cur_wk] = used + 1
+                        if cur_wk not in wk_date:
+                            # deriva data a partir da semana conhecida mais próxima
+                            known = sorted([w for w in wk_date.keys() if w != 0])
+                            if known:
+                                base_w = known[-1]
+                                wk_date[cur_wk] = wk_date[base_w] + timedelta(days=7)
+                            else:
+                                wk_date[cur_wk] = datetime.today()
+                        return cur_wk, wk_date[cur_wk]
+                    # sem vaga -> avança semana (1..53 com wrap)
+                    nxt = _next_iso_week(cur_wk)
+                    if nxt not in wk_date and cur_wk in wk_date:
+                        wk_date[nxt] = wk_date[cur_wk] + timedelta(days=7)
+                    cur_wk = nxt
+                # fallback extremo
+                return anchor_wk, wk_date.get(anchor_wk, datetime.today())
+
+            # 2) atribui para TODOS na ordem atual (não reordena linhas)
+            for i in range(len(df.index)):
+                wk, d = next_week_with_slot()
+                df.at[i, "Targetts"] = label(wk, d)
+
+            self.df_final = df
+            if user_initiated:
+                self._mark_dirty(True)
+            self.render_main_table()
+            return
+
+        # ============= MODO PADRÃO (aplicar regra) =============
+        # 1) normaliza rótulos existentes e conta ocupação atual
+        counts = {}
+        for i in range(len(df.index)):
+            cur_tt = str(df.at[i, "Targetts"]).strip()
+            wk = _parse_week_from_label(cur_tt)
+            if not cur_tt or wk is None:
+                continue
+            d = cal.get(wk, cal.get(0))
+            df.at[i, "Targetts"] = label(wk, d)
+            counts[wk] = counts.get(wk, 0) + 1
+
+        # 2) preenche somente os vazios respeitando capacidades
+        def next_week_with_slot_fill_only():
+            for _ in range(2000):  # guarda-chuva
+                for wk in [w for w in cal.keys() if w != 0]:
+                    used = counts.get(wk, 0)
+                    cap = capacity_of(wk)
+                    if used < cap:
+                        counts[wk] = used + 1
+                        return wk, cal[wk]
+                # estende calendário: cria nova semana após a maior conhecida
+                last = max([w for w in cal.keys() if w != 0] or [1])
+                nxt = 1 if last >= 53 else last + 1
+                cal[nxt] = cal[last] + timedelta(days=7)
+
+        changed = False
+        for i in range(len(df.index)):
+            if str(df.at[i, "Targetts"]).strip():
+                continue  # NÃO mexe em quem já tem semana
+            wk, d = next_week_with_slot_fill_only()
+            df.at[i, "Targetts"] = label(wk, d)
+            changed = True
+
+        self.df_final = df
+        if changed and user_initiated:
+            self._mark_dirty(True)
         self.render_main_table()
+
+
+
+        # --------- MODO PADRÃO (Aplicar Regra): NÃO mexe em quem já tem ---------
+
+        # 1) normaliza rótulos existentes e conta ocupação atual
+        counts = {}
+        for i in range(len(df.index)):
+            cur_tt = str(df.at[i, "Targetts"]).strip()
+            wk = _parse_week_from_label(cur_tt)
+            if not cur_tt or wk is None:
+                continue
+            d = cal.get(wk, cal.get(0))
+            df.at[i, "Targetts"] = label(wk, d)
+            counts[wk] = counts.get(wk, 0) + 1
+
+        # 2) preenche somente vazios respeitando capacidades
+        def next_week_with_slot_fill_only():
+            # percorre semanas em ordem natural até achar vaga
+            for _ in range(1000):  # guarda-chuva
+                for wk in [w for w in cal.keys() if w != 0]:
+                    used = counts.get(wk, 0)
+                    cap = capacity_of(wk)
+                    if used < cap:
+                        counts[wk] = used + 1
+                        return wk, cal[wk]
+                # estende calendário se necessário
+                last = max([w for w in cal.keys() if w != 0] or [1])
+                nxt = (last % 53) + 1
+                cal[nxt] = cal[last] + timedelta(days=7)
+
+        changed = False
+        for i in range(len(df.index)):
+            if str(df.at[i, "Targetts"]).strip():
+                continue
+            wk, d = next_week_with_slot_fill_only()
+            df.at[i, "Targetts"] = label(wk, d)
+            changed = True
+
+        self.df_final = df
+        if changed and user_initiated:
+            self._mark_dirty(True)
+        self.render_main_table()
+
+
 
     def _apply_week_override(self):
         try:
             w = int((self.week_override_week.get() or "").strip())
             q = int((self.week_override_qty.get()  or "").strip())
         except Exception:
-            show_error(self, "Regra inválida", "Preencha 'Semana' e 'Capacidade' com números inteiros."); return
+            show_error(self, "Regra inválida", "Preencha 'Semana' e 'Capacidade' com números inteiros.")
+            return
+
         if not (0 <= w <= 53) or q < 0:
-            show_error(self, "Regra inválida", "Semana 0–53 e capacidade ≥ 0."); return
+            show_error(self, "Regra inválida", "Semana 0–53 e capacidade ≥ 0.")
+            return
+
         prev = self._week_rule_log.get(w, None)
         if prev is not None and prev != q:
             c = ask_yes_no(self, "Alterar regra existente",
-                           f"Semana {w} já tinha {prev} targetts.\nDeseja alterar para {q} targetts?")
-            if c != "Sim": return
-        self.week_overrides[w] = q; self._week_rule_log[w] = q
+                        f"Semana {w} já tinha {prev} targetts.\nDeseja alterar para {q} targetts?")
+            if c != "Sim":
+                return
+
+        # Atualiza regra (log + rótulo)
+        self.week_overrides[w] = q
+        self._week_rule_log[w] = q
         self._update_overrides_label()
-        self.recalc_targets(keep_existing_week_caps=True, user_initiated=True)
+
+        # 1) Faz cumprir imediatamente: mantém apenas os Q primeiros dessa semana e empurra excedentes
+        self._enforce_week_capacity(week=w, cap=q)
+
+        # 2) Opcional: preencher quem está sem Targetts (se houver), sem mexer nos já marcados
+        self.recalc_targets(
+            keep_existing_week_caps=True,
+            user_initiated=True,
+            redistribute=False
+        )
+
+        show_info(self, "Regra aplicada", f"Regra da semana {w} ajustada para {q} targetts.")
+
+    def _enforce_week_capacity(self, week: int, cap: int):
+        """
+        Garante que a semana 'week' fique com EXATAMENTE 'cap' itens.
+        - Se houver excedente: mantém os 'cap' primeiros (ordem atual) e EMPURRA excedentes para as semanas posteriores, respeitando capacidades.
+        - Se houver falta: PUXA itens das semanas posteriores (em ordem crescente e respeitando a ordem visual) até completar.
+
+        Não reordena linhas; apenas ajusta o rótulo 'Targetts' das linhas movidas.
+        """
+        if self.df_final is None or self.df_final.empty:
+            return
+
+        # ----- helpers locais -----
+        def label(wk, d):
+            return f"Semana {wk:02d} - {d.strftime('%d/%m/%Y')}"
+
+        def capacity_of(wk: int) -> int:
+            try:
+                maxw = int(self.max_per_week.get())
+            except Exception:
+                maxw = 5
+            return max(0, self.week_overrides.get(wk, maxw))
+
+        def next_week(wk: int) -> int:
+            if wk == 0:
+                return 1
+            return 1 if wk >= 53 else wk + 1
+
+        # calendário de segundas-feiras por semana ISO
+        start = (self.start_date_str.get() or "28/08/2025").strip()
+        cal = _compute_week_calendar(start, horizon_weeks=240)
+
+        # ----- normaliza rótulos atuais -----
+        df = self.df_final.copy()
+        if "Targetts" not in df.columns:
+            df["Targetts"] = ""
+
+        counts = {}
+        idx_by_week = {}  # semana -> [indices na ordem visual]
+        for i in range(len(df.index)):
+            cur_tt = str(df.at[i, "Targetts"]).strip()
+            wk = _parse_week_from_label(cur_tt)
+            if not cur_tt or wk is None:
+                continue
+            d = cal.get(wk, cal.get(0))
+            df.at[i, "Targetts"] = label(wk, d)
+            counts[wk] = counts.get(wk, 0) + 1
+            idx_by_week.setdefault(wk, []).append(i)
+
+        # coleta da semana-alvo em ordem visual
+        idx_week = idx_by_week.get(week, []).copy()
+
+        # nada marcado nessa semana; ainda assim precisamos tratar (pode ser só "puxar")
+        keep = idx_week[:cap] if cap >= 0 else []
+        overflow_idx = idx_week[cap:] if cap < len(idx_week) else []
+        counts[week] = len(keep)
+
+        # mover excedentes -> semanas posteriores com vaga
+        def find_next_week_with_slot(start_wk: int):
+            wk_cursor = next_week(start_wk)
+            for _ in range(600):
+                used = counts.get(wk_cursor, 0)
+                cap_w = capacity_of(wk_cursor)
+                if used < cap_w:
+                    if wk_cursor not in cal:
+                        known = sorted([w for w in cal.keys() if w != 0])
+                        if known:
+                            base_w = known[-1]
+                            cal[wk_cursor] = cal[base_w] + timedelta(days=7 * ((wk_cursor - base_w) % 54 or 1))
+                        else:
+                            cal[wk_cursor] = datetime.today()
+                    return wk_cursor
+                wk_cursor = next_week(wk_cursor)
+            return start_wk  # fallback improvável
+
+        changed = False
+
+        # 1) EMPURRA excedentes
+        for i in overflow_idx:
+            wk_dest = find_next_week_with_slot(week)
+            d_dest = cal.get(wk_dest, cal.get(0))
+            df.at[i, "Targetts"] = label(wk_dest, d_dest)
+            # atualiza contagens e índices auxiliares
+            counts[wk_dest] = counts.get(wk_dest, 0) + 1
+            counts[week] = counts.get(week, 0) - 1
+            idx_by_week.setdefault(wk_dest, []).append(i)
+            changed = True
+
+        # 2) PUXA se estiver faltando (cap maior que keep)
+        deficit = cap - len(keep)
+        if deficit > 0:
+            # gerador que percorre semanas posteriores em ordem, entregando índices na ordem visual
+            def iter_forward_candidates(from_wk: int):
+                seen = set()
+                wk_cursor = next_week(from_wk)
+                for _ in range(600):  # guarda-chuva
+                    for idx in idx_by_week.get(wk_cursor, []):
+                        if idx not in seen:
+                            seen.add(idx)
+                            yield wk_cursor, idx
+                    wk_cursor = next_week(wk_cursor)
+
+            pulled = 0
+            for wk_src, idx in iter_forward_candidates(week):
+                if pulled >= deficit:
+                    break
+                # move a linha 'idx' para a semana alvo
+                d_dest = cal.get(week, cal.get(0))
+                df.at[idx, "Targetts"] = label(week, d_dest)
+
+                # atualiza estruturas
+                counts[wk_src] = counts.get(wk_src, 0) - 1
+                counts[week] = counts.get(week, 0) + 1
+                # remove idx da lista da fonte
+                if wk_src in idx_by_week:
+                    try:
+                        idx_by_week[wk_src].remove(idx)
+                    except ValueError:
+                        pass
+                # adiciona idx ao fim (mantém “ordem de chegada”)
+                idx_by_week.setdefault(week, []).append(idx)
+
+                pulled += 1
+                changed = True
+
+        # aplica DF e faz os ajustes complementares (sem redistribuir)
+        self.df_final = df
+
+        self.recalc_targets(
+            keep_existing_week_caps=True,
+            user_initiated=False,
+            redistribute=False
+        )
+
+        if changed:
+            self._mark_dirty(True)
         self.render_main_table()
-        self._mark_dirty(True)
+
+
+
 
     def _clear_week_overrides(self):
         self.week_overrides.clear(); self._update_overrides_label()
