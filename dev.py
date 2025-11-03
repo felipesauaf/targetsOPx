@@ -720,6 +720,44 @@ class SimpleTable(ctk.CTk):
         self.df_removed=ensure_badges(denan(self.df_removed))
         self.render_main_table(); self._render_novos_panel(); self._render_removed_panel(); self._mark_dirty(False)
 
+    def _append_selected_to_week_end(self, week: int, stayed_indexes: list[int]):
+        """
+        Move, na ORDEM ATUAL, apenas as linhas cujos índices em df_final estão em stayed_indexes
+        para logo após o último item da semana 'week'. Se a semana ainda não existe na tela,
+        coloca no FINAL da lista.
+        """
+        if self.df_final is None or self.df_final.empty or not stayed_indexes:
+            return
+
+        df = self.df_final
+        # mantém a ordem visual atual dos que ficaram
+        stayed_in_order = [i for i in df.index if i in set(stayed_indexes)]
+
+        # tira temporariamente os selecionados do dataframe para descobrir onde inserir
+        df_excl = df.drop(index=stayed_in_order)
+
+        # lista de índices na ordem visual restante
+        idx_list = list(df_excl.index)
+
+        # acha a última posição onde a semana 'week' aparece (sem os selecionados)
+        last_pos = None
+        for k, i in enumerate(idx_list):
+            wk = _parse_week_from_label(str(df_excl.at[i, "Targetts"]).strip())
+            if wk == week:
+                last_pos = k
+
+        # monta nova ordem
+        if last_pos is None:
+            # não existe ainda bloco da semana -> adiciona no fim
+            new_order = idx_list + stayed_in_order
+        else:
+            new_order = idx_list[:last_pos + 1] + stayed_in_order + idx_list[last_pos + 1:]
+
+        # aplica
+        self.df_final = df.loc[new_order].reset_index(drop=True)
+        self._mark_dirty(True)
+        self.render_main_table()
+
     def on_click_atualizar_async(self):
         total=8
         dlg=LoadingDialog(self,title="Atualizando dados…",total=total)
@@ -1291,20 +1329,39 @@ class SimpleTable(ctk.CTk):
             except Exception:
                 pass
 
-        total_selected = len(idxs)
-        now_in_week = len(after_set)
+            total_selected = len(idxs)
+            now_in_week = len(after_set)
 
-        msg = [
-            f"Foi aplicada a semana {wk} para {total_selected} targetts.",
-            f"Permaneceram em S{wk:02d}: {stayed_count}",
-            f"Itens na S{wk:02d} agora: {now_in_week}",
-            "",
-            "Você incluiu mais estes targetts:" if lines else "Nenhum dos selecionados ficou na semana (sem vagas)."
-        ]
-        if lines:
-            msg.extend(lines)
+            msg = [
+                f"Foi aplicada a semana {wk} para {total_selected} targetts.",
+                f"Permaneceram em S{wk:02d}: {stayed_count}",
+                f"Itens na S{wk:02d} agora: {now_in_week}",
+                "",
+                "Você incluiu mais estes targetts:" if lines else "Nenhum dos selecionados ficou na semana (sem vagas)."
+            ]
+            if lines:
+                msg.extend(lines)
 
-        show_info(self, "Aplicado aos selecionados", "\n".join(msg))
+            show_info(self, "Aplicado aos selecionados", "\n".join(msg))
+
+            # 🔽 NOVO: coloca os que ficaram no FIM do bloco da semana (sem reordenar o resto)
+            stayed_keys = []
+            for i in selected_that_stayed:
+                try:
+                    stayed_keys.append((
+                        str(self.df_final.at[i, "Elemento"]),
+                        str(self.df_final.at[i, "SN"]),
+                        str(self.df_final.at[i, "N° Proposta"]),
+                    ))
+                except Exception:
+                    pass
+
+            # Reposiciona somente os que ficaram na semana escolhida
+            self._append_selected_to_week_end(week=wk, stayed_indexes=selected_that_stayed)
+
+            # Re-seleciona e rola até eles (usa o helper que já te passei)
+            self._reselect_keys(stayed_keys)
+
 
 
     def sort_by_week(self, ascending=True):
