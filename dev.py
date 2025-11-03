@@ -98,12 +98,15 @@ class ThemedMessage(ctk.CTkToplevel):
         self.bind("<Return>", lambda e:self._set_choice(buttons[default_index] if 0<=default_index<len(buttons) else buttons[0]))
         self.deiconify(); self._btns[default_index].focus_set()
         self.protocol("WM_DELETE_WINDOW", lambda: self._set_choice(None))
+        self.active_tree = None   # <- Treeview atualmente visível (normal ou filtrada)
     def _set_choice(self,v): self.choice=v; self.destroy()
 
 def show_info(p,t,m):  d=ThemedMessage(p,t,m,"info",("OK",)); p.wait_window(d)
 def show_error(p,t,m): d=ThemedMessage(p,t,m,"error",("OK",)); p.wait_window(d)
 def ask_yes_no(p,t,m):
     d=ThemedMessage(p,t,m,"warn",("Sim","Não"),0); p.wait_window(d); return d.choice
+
+
 
 def get_monday_data_from_json():
     with open("monday_export_all.json","r",encoding="utf-8") as f: data=json.load(f)
@@ -398,6 +401,7 @@ class SimpleTable(ctk.CTk):
         return None
 
     def _load_images(self):
+        """Carrega imagens (logo grande)"""
         self._img_logo = self._img_sun = self._img_moon = None
         if not PIL_AVAILABLE:
             return
@@ -408,10 +412,17 @@ class SimpleTable(ctk.CTk):
                 return ctk.CTkImage(light_image=Image.open(p), size=size)
             except Exception:
                 return None
-        # opx.png está no mesmo diretório do dev.py; sun/moon no diretório pai no teu layout
-        self._img_logo = _safe_load("opx.png",  (120, 120))
+        # OPX MAIOR (96 x 96) + ícones de tema
+        self._img_logo = _safe_load("opx.png",  (96, 96))
         self._img_sun  = _safe_load("sun.png",  (20, 20))
         self._img_moon = _safe_load("moon.png", (20, 20))
+
+    def _get_active_tree(self):
+        """Retorna a Treeview atualmente visível (filtrada ou principal)."""
+        if getattr(self, "active_tree", None) is not None:
+            return self.active_tree
+        return getattr(self, "reported_tree", None)
+
 
     def _style_yellow_button(self, w):
         try:
@@ -465,33 +476,14 @@ class SimpleTable(ctk.CTk):
         self._load_images()
         self._setup_tree_style()
 
-    def _load_images(self):
-        # already defined above; keep method here for organization
-        pass
-
-    def _load_images(self):
-        # redefine (Python uses last definition) – keep as above to avoid confusion
-        self._img_logo = self._img_sun = self._img_moon = None
-        if not PIL_AVAILABLE:
-            return
-        def _safe_load(fname, size):
-            p = self._asset_path(fname)
-            if not p: return None
-            try:
-                return ctk.CTkImage(light_image=Image.open(p), size=size)
-            except Exception:
-                return None
-        self._img_logo = _safe_load("opx.png",  (42, 42))
-        self._img_sun  = _safe_load("sun.png",  (20, 20))
-        self._img_moon = _safe_load("moon.png", (20, 20))
-
     def _restyle_action_buttons(self):
         for w in (getattr(self,"btn_reload",None), getattr(self,"btn_save",None),
                   getattr(self,"btn_transfer",None),
                   getattr(self,"btn_sort_asc",None), getattr(self,"btn_sort_desc",None),
                   getattr(self,"btn_apply_week",None), getattr(self,"btn_clear_weeks",None),
                   getattr(self,"btn_removed_badge",None),
-                  getattr(self,"btn_clear_search",None)):
+                  getattr(self,"btn_clear_search",None),
+                  getattr(self,"btn_apply_selected",None)):
             if w: self._style_yellow_button(w)
 
     def _style_theme_button(self):
@@ -550,6 +542,8 @@ class SimpleTable(ctk.CTk):
         if self.df_final is not None and not self.df_final.empty:
             for _,r in self.df_final.iterrows():
                 self.reported_tree.insert("", "end", values=[r.get(c,"") for c in self.colunas_exibidas])
+        self.active_tree = self.reported_tree  # <- esta é a tabela ativa quando não está filtrado
+
 
     def _build_ui(self):
         theme=THEMES[self.appearance.get()]
@@ -559,13 +553,18 @@ class SimpleTable(ctk.CTk):
         self.header=ctk.CTkFrame(self, fg_color=HEADER_BG); self.header.pack(fill="x", padx=12, pady=12)
         self.header.grid_columnconfigure(0,weight=0); self.header.grid_columnconfigure(1,weight=1); self.header.grid_columnconfigure(2,weight=0)
         self.header.grid_rowconfigure(0,weight=0); self.header.grid_rowconfigure(1,weight=0)
+        # garante altura para a logo grande
+        try:
+            self.header.grid_rowconfigure(0, minsize=80)
+        except Exception:
+            pass
 
         if self._img_logo:
             ctk.CTkLabel(self.header, image=self._img_logo, text="").grid(row=0,column=0,padx=(12,8),pady=(6,2),sticky="w")
         else:
-            badge=ctk.CTkFrame(self.header, fg_color=OPX_YELLOW, corner_radius=10, width=40, height=40)
+            badge=ctk.CTkFrame(self.header, fg_color=OPX_YELLOW, corner_radius=10, width=80, height=80)
             badge.grid(row=0,column=0,padx=(12,8),pady=(6,2),sticky="w"); badge.grid_propagate(False)
-            ctk.CTkLabel(badge,text="OPX",text_color="#0F172A",font=ctk.CTkFont(size=14,weight="bold")).pack(expand=True)
+            ctk.CTkLabel(badge,text="OPX",text_color="#0F172A",font=ctk.CTkFont(size=20,weight="bold")).pack(expand=True)
 
         ctk.CTkLabel(self.header, text=self._base_title, text_color="#FFFFFF",
                      font=ctk.CTkFont(size=18, weight="bold")).grid(row=0,column=1,padx=(0,12),pady=(6,2),sticky="w")
@@ -596,19 +595,27 @@ class SimpleTable(ctk.CTk):
         self.btn_clear_weeks=ctk.CTkButton(self.week_frame,text="Limpar regras",command=self._clear_week_overrides,width=130,height=36)
         self._style_yellow_button(self.btn_clear_weeks); self.btn_clear_weeks.grid(row=0,column=5,padx=(2,12))
 
-        self._overrides_label=ctk.CTkLabel(self.week_frame,text="Sem regras",text_color="#FFFFFF")
-        self._overrides_label.grid(row=0,column=6,padx=(0,20))
+        self.btn_apply_selected = ctk.CTkButton(
+            self.week_frame, text="Aplicar aos selecionados",
+            command=self._apply_week_to_selected, width=210, height=36
+        )
+        self._style_yellow_button(self.btn_apply_selected)
+        self.btn_apply_selected.grid(row=0, column=6, padx=(2, 12))
 
-        ctk.CTkLabel(self.week_frame,text="Data inicial",text_color="#FFFFFF").grid(row=0,column=7,padx=(0,8))
+        # ✅ único _overrides_label em col=7 (o duplicado causava sobreposição)
+        self._overrides_label=ctk.CTkLabel(self.week_frame,text="Sem regras",text_color="#FFFFFF")
+        self._overrides_label.grid(row=0,column=7,padx=(0,20), sticky="w")
+
+        ctk.CTkLabel(self.week_frame,text="Data inicial",text_color="#FFFFFF").grid(row=0,column=8,padx=(0,8))
         self.entry_date=ctk.CTkEntry(self.week_frame,width=140,height=36,textvariable=self.start_date_str,
                                      placeholder_text="DD/MM/AAAA",justify="center")
-        self.entry_date.grid(row=0,column=8,padx=(0,16)); self._style_entry(self.entry_date)
+        self.entry_date.grid(row=0,column=9,padx=(0,16)); self._style_entry(self.entry_date)
 
-        ctk.CTkLabel(self.week_frame,text="Máx/semana",text_color="#FFFFFF").grid(row=0,column=9,padx=(0,8))
+        ctk.CTkLabel(self.week_frame,text="Máx/semana",text_color="#FFFFFF").grid(row=0,column=10,padx=(0,8))
         self.opt_max=ctk.CTkOptionMenu(self.week_frame,variable=self.max_per_week,values=["3","4","5","6","7"],
                                        fg_color=OPX_YELLOW,button_color=OPX_YELLOW,button_hover_color="#ffcc33",
                                        text_color="#0F172A",corner_radius=12,height=36)
-        self.opt_max.grid(row=0,column=10,padx=(0,10))
+        self.opt_max.grid(row=0,column=11,padx=(0,10))
 
         # ===== CORPO =====
         container=ctk.CTkFrame(self, fg_color=theme["bg2"]); container.pack(fill="both",expand=True,padx=12,pady=(0,12))
@@ -629,6 +636,10 @@ class SimpleTable(ctk.CTk):
 
         self.btn_sort_desc=ctk.CTkButton(left,text="Prioridade ↓",command=self.sort_by_priority_desc,width=140)
         self._style_yellow_button(self.btn_sort_desc); self.btn_sort_desc.pack(side="left", padx=8)
+
+        self.btn_sort_week = ctk.CTkButton(left, text="Semanas ↑", command=self.sort_by_week, width=140)
+        self._style_yellow_button(self.btn_sort_week)
+        self.btn_sort_week.pack(side="left", padx=8)
 
         # 🔍 BUSCA (lado direito da barra de ações)
         search_frame = ctk.CTkFrame(actions, fg_color=theme["bg2"])
@@ -971,6 +982,7 @@ class SimpleTable(ctk.CTk):
                 pass
         self._removed_collapsed = True
 
+    
     def _render_removed_panel(self):
         for w in self._removed_frame.winfo_children():
             w.destroy()
@@ -1134,50 +1146,181 @@ class SimpleTable(ctk.CTk):
             self._mark_dirty(True)
         self.render_main_table()
 
+        # --------- (bloco duplicado removido) ---------
+
+    def _get_selected_df_indexes(self):
+        """
+        Converte seleção visual (na tabela ativa) em índices do df_final.
+        Casa pelo trio (Elemento, SN, N° Proposta).
+        """
+        tree = self._get_active_tree()
+        if tree is None or self.df_final is None or self.df_final.empty:
+            return []
+
+        iids = list(tree.selection())
+        if not iids:
+            return []
+
+        # índice rápido por chave
+        key_cols = ["Elemento", "SN", "N° Proposta"]
+        for c in key_cols:
+            if c not in self.df_final.columns:
+                return []
+
+        index_by_key = {}
+        for i in self.df_final.index:
+            k = (str(self.df_final.at[i, "Elemento"]),
+                str(self.df_final.at[i, "SN"]),
+                str(self.df_final.at[i, "N° Proposta"]))
+            index_by_key.setdefault(k, i)  # primeiro que aparecer
+
+        idxs = []
+        for iid in iids:
+            vals = tree.item(iid, "values")
+            row = {c: (vals[j] if j < len(vals) else "") for j, c in enumerate(self.colunas_exibidas)}
+            k = (str(row.get("Elemento", "")),
+                str(row.get("SN", "")),
+                str(row.get("N° Proposta", "")))
+            i = index_by_key.get(k)
+            if i is not None:
+                idxs.append(i)
+
+        return idxs
 
 
-        # --------- MODO PADRÃO (Aplicar Regra): NÃO mexe em quem já tem ---------
+    def _indexes_with_week(self, df, wk):
+        """Retorna índices do df cuja coluna Targetts aponta para a semana wk."""
+        out = []
+        for i in df.index:
+            if _parse_week_from_label(str(df.at[i, "Targetts"]).strip()) == wk:
+                out.append(i)
+        return set(out)
+    
+    def _ask_week_number(self, default=""):
+        """
+        Abre um pop-up para o usuário digitar o número da semana (1–53).
+        Tenta usar CTkInputDialog; se não existir, cai em tkinter.simpledialog.
+        Retorna int ou None (se cancelar/fechar).
+        """
+        val = None
+        # 1) CTkInputDialog (CustomTkinter >= 5)
+        try:
+            from customtkinter import CTkInputDialog
+            dlg = CTkInputDialog(title="Aplicar semana aos selecionados",
+                                text="Digite o número da semana (1–53):")
+            val = dlg.get_input()
+        except Exception:
+            # 2) Fallback simples
+            try:
+                import tkinter.simpledialog as sd
+                val = sd.askstring("Aplicar semana aos selecionados",
+                                "Digite o número da semana (1–53):",
+                                initialvalue=str(default) if default else "")
+            except Exception:
+                val = None
 
-        # 1) normaliza rótulos existentes e conta ocupação atual
-        counts = {}
-        for i in range(len(df.index)):
-            cur_tt = str(df.at[i, "Targetts"]).strip()
-            wk = _parse_week_from_label(cur_tt)
-            if not cur_tt or wk is None:
-                continue
-            d = cal.get(wk, cal.get(0))
-            df.at[i, "Targetts"] = label(wk, d)
-            counts[wk] = counts.get(wk, 0) + 1
+        if val is None:
+            return None  # cancelado
 
-        # 2) preenche somente vazios respeitando capacidades
-        def next_week_with_slot_fill_only():
-            # percorre semanas em ordem natural até achar vaga
-            for _ in range(1000):  # guarda-chuva
-                for wk in [w for w in cal.keys() if w != 0]:
-                    used = counts.get(wk, 0)
-                    cap = capacity_of(wk)
-                    if used < cap:
-                        counts[wk] = used + 1
-                        return wk, cal[wk]
-                # estende calendário se necessário
-                last = max([w for w in cal.keys() if w != 0] or [1])
-                nxt = (last % 53) + 1
-                cal[nxt] = cal[last] + timedelta(days=7)
+        val = str(val).strip()
+        if not val:
+            return None
 
-        changed = False
-        for i in range(len(df.index)):
-            if str(df.at[i, "Targetts"]).strip():
-                continue
-            wk, d = next_week_with_slot_fill_only()
-            df.at[i, "Targetts"] = label(wk, d)
-            changed = True
+        try:
+            wk = int(val)
+        except Exception:
+            show_error(self, "Semana inválida", "Informe um número inteiro entre 1 e 53.")
+            return None
 
-        self.df_final = df
-        if changed and user_initiated:
-            self._mark_dirty(True)
+        if not (1 <= wk <= 53):
+            show_error(self, "Semana inválida", "Semana deve estar entre 1 e 53.")
+            return None
+
+        return wk
+
+
+    def _apply_week_to_selected(self):
+        # --- pega seleção ---
+        idxs = self._get_selected_df_indexes()
+        if not idxs:
+            show_error(self, "Nada selecionado", "Selecione ao menos um item na tabela.")
+            return
+
+        # --- pergunta a semana via pop-up ---
+        wk_default = (self.week_override_week.get() or "").strip()  # usa como sugestão, se existir
+        wk = self._ask_week_number(default=wk_default)
+        if wk is None:
+            return  # usuário cancelou/fechou
+
+        # snapshot antes (quem já estava na semana)
+        before_set = self._indexes_with_week(self.df_final, wk)
+
+        # label da semana
+        start = (self.start_date_str.get() or "28/08/2025").strip()
+        cal = _compute_week_calendar(start, 240)
+        d = cal.get(wk, cal.get(0)) or datetime.strptime(start, "%d/%m/%Y")
+        lbl = f"Semana {wk:02d} - {d.strftime('%d/%m/%Y')}"
+
+        # aplica label nos selecionados
+        for i in idxs:
+            self.df_final.at[i, "Targetts"] = lbl
+
+        # capacidade alvo (regra da semana > máx/semana padrão)
+        try:
+            cap = int(self.week_overrides.get(wk, int(self.max_per_week.get())))
+        except Exception:
+            cap = self.week_overrides.get(wk, 5)
+
+        self._mark_dirty(True)
+        # faz cumprir capacidade e render
+        self._enforce_week_capacity(week=wk, cap=cap)
+
+        # pós-enforce: quem ficou na semana
+        after_set = self._indexes_with_week(self.df_final, wk)
+        selected_that_stayed = [i for i in idxs if i in after_set]
+        stayed_count = len(selected_that_stayed)
+
+        # lista “Você incluiu estes targetts”
+        lines = []
+        for i in selected_that_stayed:
+            try:
+                el = str(self.df_final.at[i, "Elemento"])
+                sn = str(self.df_final.at[i, "SN"])
+                pr = str(self.df_final.at[i, "N° Proposta"])
+                lines.append(f"– {el} | {sn} | {pr}")
+            except Exception:
+                pass
+
+        total_selected = len(idxs)
+        now_in_week = len(after_set)
+
+        msg = [
+            f"Foi aplicada a semana {wk} para {total_selected} targetts.",
+            f"Permaneceram em S{wk:02d}: {stayed_count}",
+            f"Itens na S{wk:02d} agora: {now_in_week}",
+            "",
+            "Você incluiu mais estes targetts:" if lines else "Nenhum dos selecionados ficou na semana (sem vagas)."
+        ]
+        if lines:
+            msg.extend(lines)
+
+        show_info(self, "Aplicado aos selecionados", "\n".join(msg))
+
+
+    def sort_by_week(self, ascending=True):
+        """Ordena por número da semana (estável, preserva ordem relativa dentro da semana)."""
+        if self.df_final is None or self.df_final.empty:
+            return
+        def wk_key(lbl):
+            wk = _parse_week_from_label(str(lbl))
+            return wk if wk is not None else 999
+        self.df_final = self.df_final.sort_values(
+            by="Targetts",
+            key=lambda s: s.map(wk_key),
+            ascending=ascending,
+            kind="stable"
+        ).reset_index(drop=True)
         self.render_main_table()
-
-
 
     def _apply_week_override(self):
         try:
@@ -1206,7 +1349,7 @@ class SimpleTable(ctk.CTk):
         # 1) Faz cumprir imediatamente: mantém apenas os Q primeiros dessa semana e empurra excedentes
         self._enforce_week_capacity(week=w, cap=q)
 
-        # 2) Opcional: preencher quem está sem Targetts (se houver), sem mexer nos já marcados
+        # 2) Preenche quem está sem Targetts (se houver), sem mexer nos já marcados
         self.recalc_targets(
             keep_existing_week_caps=True,
             user_initiated=True,
@@ -1218,15 +1361,13 @@ class SimpleTable(ctk.CTk):
     def _enforce_week_capacity(self, week: int, cap: int):
         """
         Garante que a semana 'week' fique com EXATAMENTE 'cap' itens.
-        - Se houver excedente: mantém os 'cap' primeiros (ordem atual) e EMPURRA excedentes para as semanas posteriores, respeitando capacidades.
-        - Se houver falta: PUXA itens das semanas posteriores (em ordem crescente e respeitando a ordem visual) até completar.
-
-        Não reordena linhas; apenas ajusta o rótulo 'Targetts' das linhas movidas.
+        1) Mantém os 'cap' primeiros (ordem visual).
+        2) Excedentes: empurra para semanas posteriores respeitando capacidades.
+        3) Se faltar: primeiro preenche com linhas SEM Targetts; se ainda faltar, puxa de semanas posteriores.
         """
         if self.df_final is None or self.df_final.empty:
             return
 
-        # ----- helpers locais -----
         def label(wk, d):
             return f"Semana {wk:02d} - {d.strftime('%d/%m/%Y')}"
 
@@ -1238,40 +1379,35 @@ class SimpleTable(ctk.CTk):
             return max(0, self.week_overrides.get(wk, maxw))
 
         def next_week(wk: int) -> int:
-            if wk == 0:
-                return 1
-            return 1 if wk >= 53 else wk + 1
+            return 1 if wk >= 53 else (1 if wk == 0 else wk + 1)
 
-        # calendário de segundas-feiras por semana ISO
         start = (self.start_date_str.get() or "28/08/2025").strip()
         cal = _compute_week_calendar(start, horizon_weeks=240)
 
-        # ----- normaliza rótulos atuais -----
         df = self.df_final.copy()
         if "Targetts" not in df.columns:
             df["Targetts"] = ""
 
-        counts = {}
-        idx_by_week = {}  # semana -> [indices na ordem visual]
+        # Normaliza rótulos e monta índices por semana
+        counts, idx_by_week = {}, {}
         for i in range(len(df.index)):
             cur_tt = str(df.at[i, "Targetts"]).strip()
             wk = _parse_week_from_label(cur_tt)
-            if not cur_tt or wk is None:
-                continue
-            d = cal.get(wk, cal.get(0))
-            df.at[i, "Targetts"] = label(wk, d)
-            counts[wk] = counts.get(wk, 0) + 1
-            idx_by_week.setdefault(wk, []).append(i)
+            if cur_tt and wk is not None:
+                d = cal.get(wk, cal.get(0))
+                df.at[i, "Targetts"] = label(wk, d)
+                counts[wk] = counts.get(wk, 0) + 1
+                idx_by_week.setdefault(wk, []).append(i)
 
-        # coleta da semana-alvo em ordem visual
+        # Coleta da semana-alvo
         idx_week = idx_by_week.get(week, []).copy()
-
-        # nada marcado nessa semana; ainda assim precisamos tratar (pode ser só "puxar")
         keep = idx_week[:cap] if cap >= 0 else []
         overflow_idx = idx_week[cap:] if cap < len(idx_week) else []
         counts[week] = len(keep)
 
-        # mover excedentes -> semanas posteriores com vaga
+        changed = False
+
+        # 1) Empurra excedentes
         def find_next_week_with_slot(start_wk: int):
             wk_cursor = next_week(start_wk)
             for _ in range(600):
@@ -1280,36 +1416,39 @@ class SimpleTable(ctk.CTk):
                 if used < cap_w:
                     if wk_cursor not in cal:
                         known = sorted([w for w in cal.keys() if w != 0])
-                        if known:
-                            base_w = known[-1]
-                            cal[wk_cursor] = cal[base_w] + timedelta(days=7 * ((wk_cursor - base_w) % 54 or 1))
-                        else:
-                            cal[wk_cursor] = datetime.today()
+                        cal[wk_cursor] = (cal[known[-1]] + timedelta(days=7)) if known else datetime.today()
                     return wk_cursor
                 wk_cursor = next_week(wk_cursor)
-            return start_wk  # fallback improvável
+            return start_wk
 
-        changed = False
-
-        # 1) EMPURRA excedentes
         for i in overflow_idx:
             wk_dest = find_next_week_with_slot(week)
             d_dest = cal.get(wk_dest, cal.get(0))
             df.at[i, "Targetts"] = label(wk_dest, d_dest)
-            # atualiza contagens e índices auxiliares
             counts[wk_dest] = counts.get(wk_dest, 0) + 1
             counts[week] = counts.get(week, 0) - 1
             idx_by_week.setdefault(wk_dest, []).append(i)
             changed = True
 
-        # 2) PUXA se estiver faltando (cap maior que keep)
-        deficit = cap - len(keep)
+        # 2) Se estiver faltando, preenche com VAZIOS primeiro
+        deficit = cap - counts.get(week, 0)
         if deficit > 0:
-            # gerador que percorre semanas posteriores em ordem, entregando índices na ordem visual
+            d_dest = cal.get(week, cal.get(0))
+            for i in range(len(df.index)):
+                if deficit <= 0:
+                    break
+                if not str(df.at[i, "Targetts"]).strip():  # vazio
+                    df.at[i, "Targetts"] = label(week, d_dest)
+                    counts[week] = counts.get(week, 0) + 1
+                    deficit -= 1
+                    changed = True
+
+        # 3) Ainda faltou? puxa de semanas posteriores (ordem visual)
+        if deficit > 0:
             def iter_forward_candidates(from_wk: int):
                 seen = set()
                 wk_cursor = next_week(from_wk)
-                for _ in range(600):  # guarda-chuva
+                for _ in range(600):
                     for idx in idx_by_week.get(wk_cursor, []):
                         if idx not in seen:
                             seen.add(idx)
@@ -1320,28 +1459,21 @@ class SimpleTable(ctk.CTk):
             for wk_src, idx in iter_forward_candidates(week):
                 if pulled >= deficit:
                     break
-                # move a linha 'idx' para a semana alvo
                 d_dest = cal.get(week, cal.get(0))
                 df.at[idx, "Targetts"] = label(week, d_dest)
-
-                # atualiza estruturas
                 counts[wk_src] = counts.get(wk_src, 0) - 1
                 counts[week] = counts.get(week, 0) + 1
-                # remove idx da lista da fonte
-                if wk_src in idx_by_week:
-                    try:
-                        idx_by_week[wk_src].remove(idx)
-                    except ValueError:
-                        pass
-                # adiciona idx ao fim (mantém “ordem de chegada”)
+                try:
+                    idx_by_week[wk_src].remove(idx)
+                except Exception:
+                    pass
                 idx_by_week.setdefault(week, []).append(idx)
-
                 pulled += 1
                 changed = True
 
-        # aplica DF e faz os ajustes complementares (sem redistribuir)
         self.df_final = df
 
+        # Complementa: preenche apenas os vazios restantes conforme capacidades (não redistribui quem já tem)
         self.recalc_targets(
             keep_existing_week_caps=True,
             user_initiated=False,
@@ -1351,9 +1483,6 @@ class SimpleTable(ctk.CTk):
         if changed:
             self._mark_dirty(True)
         self.render_main_table()
-
-
-
 
     def _clear_week_overrides(self):
         self.week_overrides.clear(); self._update_overrides_label()
@@ -1438,9 +1567,6 @@ class SimpleTable(ctk.CTk):
             return PRIO_ORDER.get(p, 999)
 
         if faltantes:
-            # Calcula posição de inserção: após o último bloco de alguma prioridade "maior" presente,
-            # respeitando a ordem atual. Se não houver nenhuma, no final.
-            # Para simplificar, vamos inserir no final mantendo a ordem de severidade (SEVERA->ALTA->MEDIA->BAIXA).
             for p in sorted(faltantes, key=prio_rank):
                 resultado.extend(novos_por_prio[p])
 
@@ -1449,7 +1575,6 @@ class SimpleTable(ctk.CTk):
         self.df_novos = pd.DataFrame()
 
         # 7) Recalcula os Targetts para preencher os novos
-        #    Mantém as capacidades já existentes das semanas (para mexer o mínimo possível).
         self.recalc_targets(keep_existing_week_caps=True, user_initiated=True)
 
         # 8) Re-render
@@ -1457,7 +1582,6 @@ class SimpleTable(ctk.CTk):
         self._render_novos_panel()
         self._mark_dirty(True)
         show_info(self, "Transferência concluída", f"{len(novos_rows)} item(ns) adicionado(s) na sua prioridade.")
-
 
     def export_excel(self):
         if self.df_final is None: return
@@ -1505,12 +1629,16 @@ class SimpleTable(ctk.CTk):
             for _, r in df_filtered.iterrows():
                 t.insert("", "end", values=[r.get(c, "") for c in self.colunas_exibidas])
 
+        self.active_tree = t  # <- use esta tabela para pegar seleção quando filtrado
+
+
     def _clear_search(self):
         try:
             self.search_var.set("")
         except Exception:
             pass
         self.render_main_table()
+        self.active_tree = getattr(self, "reported_tree", None)
 
     def _on_close(self):
         if not self._dirty: self.destroy(); return
@@ -1520,6 +1648,8 @@ class SimpleTable(ctk.CTk):
             except Exception as e:
                 show_error(self,"Erro ao salvar",f"Falha ao salvar:\n{e}"); return
         self.destroy()
+   
+
 
 if __name__=="__main__":
     app=SimpleTable(); app.mainloop()
