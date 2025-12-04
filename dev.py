@@ -187,11 +187,13 @@ def write_lista_excel_at(df, path):
     return path
 
 def compare_new_removed(df_lista, df_monday):
+    print(df_monday)
     if df_lista is None: df_lista=pd.DataFrame(columns=["_item_id"]+COLS_UI)
     if df_monday is None: df_monday=pd.DataFrame(columns=["_item_id"]+COLS_UI)
     cur=set(str(x).strip() for x in df_lista["_item_id"].tolist())
     new=set(str(x).strip() for x in df_monday["_item_id"].tolist())
     novos_ids = list(new-cur); rem_ids = list(cur-new)
+    
     df_novos   = denan(df_monday[df_monday["_item_id"].astype(str).isin(novos_ids)]) if novos_ids else pd.DataFrame()
     df_removed = denan(df_lista [df_lista ["_item_id"].astype(str).isin(rem_ids)])   if rem_ids else pd.DataFrame()
     return df_novos, df_removed
@@ -337,6 +339,8 @@ class SimpleTable(ctk.CTk):
         self._base_title="Fila de Reparos"
         self.title(self._base_title); self.geometry("1320x860"); self.minsize(1100,650)
         self.protocol("WM_DELETE_WINDOW", self._on_close)
+
+        self.flag_firstStart = 0
 
         self.start_date_str=ctk.StringVar(value="28/08/2025")
         self.max_per_week  =ctk.StringVar(value="5")
@@ -714,7 +718,10 @@ class SimpleTable(ctk.CTk):
             mon=map_monday_to_ptbr(mon_raw) if mon_raw is not None else pd.DataFrame()
         except Exception:
             mon=pd.DataFrame()
-        self.df_novos, self.df_removed = compare_new_removed(self.df_final, mon)
+        if (self.flag_firstStart):
+            self.df_novos, self.df_removed = compare_new_removed(self.df_final, mon)
+        else:
+            self.flag_firstStart = 1
         self.df_final=ensure_badges(self.df_final)
         self.df_novos=ensure_badges(denan(self.df_novos))
         self.df_removed=ensure_badges(denan(self.df_removed))
