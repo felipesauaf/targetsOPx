@@ -9,7 +9,7 @@ class dataMondaytoJson:
   def mondayToJson(self):
     # Configuração
     API_URL = "https://api.monday.com/v2"
-    API_TOKEN = "eyJhbGciOiJIUzI1NiJ9.eyJ0aWQiOjUzMjIwNzUwNywiYWFpIjoxMSwidWlkIjo4NjA1NjM1LCJpYWQiOiIyMDI1LTA2LTI3VDIxOjA2OjI3LjAwMFoiLCJwZXIiOiJtZTp3cml0ZSIsImFjdGlkIjozOTI2MzAzLCJyZ24iOiJ1c2UxIn0.EDQ9gomjxu2Uli4-4HLx5zirJ7HAB8XpT-CkVe782zk"  # Substitua aqui seu token
+    API_TOKEN = "eyJhbGciOiJIUzI1NiJ9.eyJ0aWQiOjU5MjIwODg1NiwiYWFpIjoxMSwidWlkIjo3NjMzNzk2NiwiaWFkIjoiMjAyNS0xMi0wMVQxMToyMjo1NC4wODdaIiwicGVyIjoibWU6d3JpdGUiLCJhY3RpZCI6MzkyNjMwMywicmduIjoidXNlMSJ9.i_f6R16ShN77SZdZpy_0767ZSGuQpIPq0IBtlYV4HVc"  # Substitua aqui seu token
     BOARD_ID = 1264540922
 
     # Cabeçalhos HTTP
